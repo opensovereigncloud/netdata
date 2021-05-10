@@ -1,3 +1,11 @@
+### Install by helm
+
+```
+kubectl create ns test
+helm install -n test test1 ./chart
+```
+
+
 ### Build
 
 ```
