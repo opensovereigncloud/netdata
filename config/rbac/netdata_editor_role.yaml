@@ -5,7 +5,7 @@ metadata:
   name: netdata-editor-role
 rules:
 - apiGroups:
-  - machine.onmetal.de.onmetal.de
+  - machine.onmetal.de
   resources:
   - netdata
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - machine.onmetal.de.onmetal.de
+  - machine.onmetal.de
   resources:
   - netdata/status
   verbs:

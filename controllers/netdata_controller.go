@@ -271,8 +271,8 @@ func checkttl(r *NetdataReconciler, ctx context.Context, req ctrl.Request, now m
 	}
 }
 
-// +kubebuilder:rbac:groups=machine.onmetal.de.onmetal.de,resources=netdata,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=machine.onmetal.de.onmetal.de,resources=netdata/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata/status,verbs=get;update;patch
 func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	_ = r.Log.WithValues("netdata", req.NamespacedName)

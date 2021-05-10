@@ -3,12 +3,19 @@
 # Declare variables to be passed into your templates.
 
 replicaCount: 1
+fullname: netdata
+selectorLabels:
+  control-plane: controller-manager
+
+labels:
+  control-plane: controller-manager
+
+
 
 image:
-  repository: nginx
+  repository: localhost/netdata
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "1"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -28,13 +35,10 @@ podAnnotations: {}
 podSecurityContext: {}
   # fsGroup: 2000
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+  capabilities:
+    add:
+      - NET_ADMIN
 
 service:
   type: ClusterIP
@@ -57,17 +61,13 @@ ingress:
   #    hosts:
   #      - chart-example.local
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+resources:
+  limits:
+    cpu: 100m
+    memory: 30Mi
+  requests:
+    cpu: 100m
+    memory: 20Mi
 
 autoscaling:
   enabled: false
@@ -81,3 +81,10 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+crd:
+  group: machine.onmetal.de
+  plural: netdata
+  singular: netdata
+  kind: Netdata
+  listKind: NetdataList
+  scope: Namespaced

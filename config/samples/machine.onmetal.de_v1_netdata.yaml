@@ -1,4 +1,4 @@
-apiVersion: machine.onmetal.de.onmetal.de/v1
+apiVersion: machine.onmetal.de/v1
 kind: Netdata
 metadata:
   name: netdata-sample
