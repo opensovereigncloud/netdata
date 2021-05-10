@@ -1,0 +1,7 @@
+domain: onmetal.de
+repo: netdata
+resources:
+- group: machine.onmetal.de
+  kind: Netdata
+  version: v1
+version: "2"

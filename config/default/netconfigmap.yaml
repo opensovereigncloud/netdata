@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netdata-config
+  labels:
+    control-plane: controller-manager
+data:
+  netdata-config.yaml: "---\nsubnets: ['10.0.0.0/24']\ninterval: 60\nttl: 3600\nkeaapi: 'http://kea-primary.kea-dhcp.svc.cluster.local:8000/'"
