@@ -43,6 +43,8 @@ type NetdataSpec struct {
 
 	// +kubebuilder:validation:Required
 	Subnet string `json:"subnet,omitempty"`
+
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // NetdataStatus defines the observed state of Netdata

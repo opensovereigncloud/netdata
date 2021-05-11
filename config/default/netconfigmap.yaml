@@ -5,4 +5,4 @@ metadata:
   labels:
     control-plane: controller-manager
 data:
-  netdata-config.yaml: "---\nsubnets: ['10.0.0.0/24']\ninterval: 60\nttl: 3600\nkeaapi: 'http://kea-primary.kea-dhcp.svc.cluster.local:8000/'"
+  netdata-config.yaml: "---\nsubnets: ['10.0.0.0/24']\ninterval: 60\nttl: 3600\nkeaapi: 'http://kea-primary.kea-dhcp.svc.cluster.local:8000/'\ninteface: 'wlp2s0'\nippriority: ['nmap','ndp','dhcp']\nhostnamepriority: ['dhcp','nmap','ndp']\n"

@@ -67,24 +67,20 @@ type PostData struct {
 	Service []string `json:"service"`
 }
 
+//'{ "command": "lease4-get-all", "service": [ "dhcp4" ] }'
+//'{ "command": "lease6-get-all", "service": [ "dhcp6" ] }'
 func postData(ipv int) string {
 	res := &PostData{
 		Command: fmt.Sprintf("lease%d-get-all", ipv),
 		Service: []string{fmt.Sprintf("dhcp%d", ipv)},
 	}
 	res1, _ := json.Marshal(res)
-	//'{ "command": "lease4-get-all", "service": [ "dhcp4" ] }'
-	//'{ "command": "lease6-get-all", "service": [ "dhcp6" ] }'
 	return string(res1)
 }
 
 /*
- if [ "$1" == "-6" ]; then
   output=$(curl -s -X POST -H "Content-Type: application/json" -d '{ "command": "lease6-get-all", "service": [ "dhcp6" ] }' http://192.168.10.3:8000/)
-else
   output=$(curl -s -X POST -H "Content-Type: application/json" -d '{ "command": "lease4-get-all", "service": [ "dhcp4" ] }' http://192.168.10.3:8000/)
-fi
-
 */
 
 func kealease(apiUrl string, ipv int) []Lease {
@@ -103,10 +99,13 @@ func kealease(apiUrl string, ipv int) []Lease {
 }
 
 type netdataconf struct {
-	Subnets  []string `yaml:"subnets"`
-	Interval int      `yaml:"interval"`
-	TTL      int      `yaml:"ttl"`
-	KeaApi   string   `yaml:"keaapi"`
+	Subnets   []string `yaml:"subnets"`
+	Interval  int      `yaml:"interval"`
+	TTL       int      `yaml:"ttl"`
+	KeaApi    string   `yaml:"keaapi"`
+	Interface string   `yaml:"interface"`
+	IPPrio    []string `yaml:"ippriority"`
+	NamePrio  []string `yaml:"hostnamepriority"`
 }
 
 func (c *netdataconf) getConf() *netdataconf {
@@ -235,10 +234,12 @@ func createNetCRD(ipv4 string, ipv6 string, mac string, subnet string, conf *net
 	}
 
 	crdname := strings.ToLower(strings.Replace(mac, ":", "", -1))
+	labels := map[string]string{"ipv4": ipv4, "ipv6": strings.Replace(ipv6, ":", "_", -1)}
 	netcrd := &dev1.Netdata{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      crdname,
 			Namespace: req.Namespace,
+			Labels:    labels,
 		},
 		Spec: netSpec,
 	}
@@ -278,13 +279,17 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	_ = r.Log.WithValues("netdata", req.NamespacedName)
 	mergeRes := make(map[string]dev1.NetdataSpec)
 
+	// get configmap data
+	var c netdataconf
+	c.getConf()
+
 	// ttl
 	var now metav1.Time = metav1.Time{Time: time.Now()}
 	checkttl(r, ctx, req, now)
 
 	// ipv6 neighbour
 	// Select a network interface by its name to use for NDP communications.
-	ifi, err := net.InterfaceByName("wlp2s0")
+	ifi, err := net.InterfaceByName(c.Interface)
 	if err != nil {
 		log.Fatalf("failed to get interface: %v", err)
 	}
@@ -352,26 +357,24 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		MACAddress: string(tll.Addr),
 	}
 
-	// get configmap data
-	var c netdataconf
-	c.getConf()
-
 	// kea api
 	res1 := kealease(c.KeaApi, 4)
-	res2 := kealease(c.KeaApi, 6)
 	for idx := range res1 {
 		k := &res1[idx]
 		mergeRes[k.HwAddress] = dev1.NetdataSpec{
 			IPAddress:  k.IPAddress,
 			MACAddress: k.HwAddress,
+			Hostname:   k.Hostname,
 		}
 	}
 
+	res2 := kealease(c.KeaApi, 6)
 	for idx := range res2 {
 		k := &res1[idx]
 		mergeRes[k.HwAddress] = dev1.NetdataSpec{
 			IPV6Address: k.IPAddress,
 			MACAddress:  k.HwAddress,
+			Hostname:    k.Hostname,
 		}
 	}
 
