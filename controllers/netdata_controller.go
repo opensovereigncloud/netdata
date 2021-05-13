@@ -42,6 +42,16 @@ import (
 	dev1 "netdata/api/v1"
 )
 
+type dropReason int
+
+const (
+	dropClosed      = 7
+	dropReasonError = 12
+	dropReasonNone  = 0
+)
+
+type NetdataMap map[string]dev1.NetdataSpec
+
 type KeaJson []struct {
 	Arguments Arguments `json:"arguments"`
 	Result    int       `json:"result"`
@@ -67,8 +77,8 @@ type PostData struct {
 	Service []string `json:"service"`
 }
 
-//'{ "command": "lease4-get-all", "service": [ "dhcp4" ] }'
-//'{ "command": "lease6-get-all", "service": [ "dhcp6" ] }'
+// '{ "command": "lease4-get-all", "service": [ "dhcp4" ] }'
+// '{ "command": "lease6-get-all", "service": [ "dhcp6" ] }'
 func postData(ipv int) string {
 	res := &PostData{
 		Command: fmt.Sprintf("lease%d-get-all", ipv),
@@ -233,8 +243,8 @@ func createNetCRD(ipv4 string, ipv6 string, mac string, subnet string, conf *net
 		Subnet:      subnet,
 	}
 
-	crdname := strings.ToLower(strings.Replace(mac, ":", "", -1))
-	labels := map[string]string{"ipv4": ipv4, "ipv6": strings.Replace(ipv6, ":", "_", -1)}
+	crdname := strings.ToLower(strings.ReplaceAll(mac, ":", ""))
+	labels := map[string]string{"ipv4": ipv4, "ipv6": strings.ReplaceAll(ipv6, ":", "_")}
 	netcrd := &dev1.Netdata{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      crdname,
@@ -272,12 +282,86 @@ func checkttl(r *NetdataReconciler, ctx context.Context, req ctrl.Request, now m
 	}
 }
 
+func (mergeRes NetdataMap) processNDP(ndpconn *ndp.Conn) dropReason {
+	msg, _, from, err := ndpconn.ReadFrom()
+	if err != nil {
+		if err == io.EOF {
+			return dropClosed
+		}
+		if err != nil {
+			log.Fatalf("failed to read NDP message: %v", err)
+		}
+		return dropReasonError
+	}
+
+	// Expect a neighbor advertisement message with a target link-layer
+	// address option.
+	na, ok := msg.(*ndp.NeighborAdvertisement)
+	if !ok {
+		log.Fatalf("message is not a neighbor advertisement: %T", msg)
+	}
+	if len(na.Options) != 1 {
+		log.Fatal("expected one option in neighbor advertisement")
+	}
+	tll, ok := na.Options[0].(*ndp.LinkLayerAddress)
+	if !ok {
+		log.Fatalf("option is not a link-layer address: %T", msg)
+	}
+
+	fmt.Printf("ndp: neighbor advertisement from %s:\n", from)
+	fmt.Printf("  - solicited: %t\n", na.Solicited)
+	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+	mergeRes[string(tll.Addr)] = dev1.NetdataSpec{
+		IPV6Address: string(from),
+		MACAddress:  string(tll.Addr),
+	}
+	return dropClosed
+}
+
+func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf) {
+	res1 := kealease(c.KeaApi, 4)
+	for idx := range res1 {
+		k := &res1[idx]
+		mergeRes[k.HwAddress] = dev1.NetdataSpec{
+			IPAddress:  k.IPAddress,
+			MACAddress: k.HwAddress,
+			Hostname:   k.Hostname,
+		}
+	}
+
+	res2 := kealease(c.KeaApi, 6)
+	for idx := range res2 {
+		k := &res1[idx]
+		ipv6 := k.IPAddress
+		if mergeRes[k.HwAddress].IPV6Address != "" {
+			if indexOf("hdp", c.IPPrio) > indexOf("kea", c.IPPrio) {
+				ipv6 = mergeRes[k.HwAddress].IPV6Address
+			}
+		}
+
+		mergeRes[k.HwAddress] = dev1.NetdataSpec{
+			IPV6Address: ipv6,
+			MACAddress:  k.HwAddress,
+			Hostname:    k.Hostname,
+		}
+	}
+}
+
+func indexOf(element string, data []string) int {
+	for k, v := range data {
+		if element == v {
+			return k
+		}
+	}
+	return -1 //not found.
+}
+
 // +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata/status,verbs=get;update;patch
 func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	_ = r.Log.WithValues("netdata", req.NamespacedName)
-	mergeRes := make(map[string]dev1.NetdataSpec)
+	mergeRes := make(NetdataMap)
 
 	// get configmap data
 	var c netdataconf
@@ -330,53 +414,11 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		log.Fatalf("failed to write neighbor solicitation: %v", err)
 	}
 
-	msg, _, from, err := ndpconn.ReadFrom()
-	if err != nil {
-		log.Fatalf("failed to read NDP message: %v", err)
-	}
-
-	// Expect a neighbor advertisement message with a target link-layer
-	// address option.
-	na, ok := msg.(*ndp.NeighborAdvertisement)
-	if !ok {
-		log.Fatalf("message is not a neighbor advertisement: %T", msg)
-	}
-	if len(na.Options) != 1 {
-		log.Fatal("expected one option in neighbor advertisement")
-	}
-	tll, ok := na.Options[0].(*ndp.LinkLayerAddress)
-	if !ok {
-		log.Fatalf("option is not a link-layer address: %T", msg)
-	}
-
-	fmt.Printf("ndp: neighbor advertisement from %s:\n", from)
-	fmt.Printf("  - solicited: %t\n", na.Solicited)
-	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
-	mergeRes[string(tll.Addr)] = dev1.NetdataSpec{
-		IPAddress:  string(from),
-		MACAddress: string(tll.Addr),
+	for mergeRes.processNDP(ndpconn) != dropClosed {
 	}
 
 	// kea api
-	res1 := kealease(c.KeaApi, 4)
-	for idx := range res1 {
-		k := &res1[idx]
-		mergeRes[k.HwAddress] = dev1.NetdataSpec{
-			IPAddress:  k.IPAddress,
-			MACAddress: k.HwAddress,
-			Hostname:   k.Hostname,
-		}
-	}
-
-	res2 := kealease(c.KeaApi, 6)
-	for idx := range res2 {
-		k := &res1[idx]
-		mergeRes[k.HwAddress] = dev1.NetdataSpec{
-			IPV6Address: k.IPAddress,
-			MACAddress:  k.HwAddress,
-			Hostname:    k.Hostname,
-		}
-	}
+	mergeRes.kealeaseProcess(&c)
 
 	// nmap
 	for idx := range c.Subnets {
@@ -392,9 +434,21 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				break
 			}
 			fmt.Printf("Host ipv4 is %s mac is %s\n", host.Addresses[0], host.Addresses[1])
+			hostname := host.Hostnames[0].Name
+			if mergeRes[nmapMac].Hostname != "" {
+				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+					hostname = mergeRes[nmapMac].Hostname
+				}
+			}
+			if mergeRes[nmapMac].IPAddress != "" {
+				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+					nmapIp = mergeRes[nmapMac].IPAddress
+				}
+			}
 			mergeRes[nmapMac] = dev1.NetdataSpec{
 				IPAddress:  nmapIp,
 				MACAddress: nmapMac,
+				Hostname:   hostname,
 			}
 		}
 	}
