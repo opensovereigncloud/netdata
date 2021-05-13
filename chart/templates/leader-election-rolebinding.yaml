@@ -8,5 +8,5 @@ roleRef:
   name: {{ include "netdata.fullname" . }}-leader-election-role
 subjects:
   - kind: ServiceAccount
-    name: default
+    name: {{ include "netdata.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
