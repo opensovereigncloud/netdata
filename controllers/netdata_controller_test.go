@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	dev1 "netdata/api/v1"
+	dev1 "github.com/onmetal/netdata/api/v1"
 
 	ginkgo "github.com/onsi/ginkgo"
 	gomega "github.com/onsi/gomega"

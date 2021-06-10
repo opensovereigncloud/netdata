@@ -26,8 +26,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	machineonmetaldev1 "netdata/api/v1"
-	"netdata/controllers"
+	machineonmetaldev1 "github.com/onmetal/netdata/api/v1"
+	"github.com/onmetal/netdata/controllers"
 	// +kubebuilder:scaffold:imports
 )
 

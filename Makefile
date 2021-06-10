@@ -15,6 +15,7 @@ all: manager
 
 # Run tests
 test: generate fmt vet manifests
+	golangci-lint run ./...
 	go test ./... -coverprofile cover.out
 
 # Build manager binary
@@ -89,3 +90,10 @@ CONTROLLER_GEN=$(GOBIN)/controller-gen
 else
 CONTROLLER_GEN=$(shell which controller-gen)
 endif
+
+
+run-delve: generate fmt vet manifests
+	go build -gcflags "all=-trimpath=$(shell go env GOPATH)" -o bin/manager main.go
+	sudo setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip ./bin/manager
+	dlv --listen=:2345 --headless=true --api-version=2 --accept-multiclient exec ./bin/manager
+

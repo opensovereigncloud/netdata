@@ -1,14 +1,14 @@
 apiVersion: machine.onmetal.de/v1
 kind: Netdata
 metadata:
-  name: '16bf7b2f8e9c'
+  name: '16bf7b2f8e6c'
   labels:
     ipv4: '10.20.30.40'
-    ipv6: 'fe80__14bf_7bff_fe2f_8e9c'
+    ipv6: 'fe80__14bf_7bff_fe2f_8e6c'
 spec:
   subnet: '10.20.30.0/24'
   ipAddress: '10.20.30.40'
-  ipv6Address: 'fe80::14bf:7bff:fe2f:8e9c'
-  macAddress: '16:bf:7b:2f:8e:9c'
-  expiration: '2021-04-09T18:25:43.511Z'
+  ipv6Address: 'fe80::14bf:7bff:fe2f:8e6c'
+  macAddress: '16:bf:7b:2f:8e:6c'
+  expiration: '2025-04-09T18:25:43.511Z'
   hostname: 'test.com'

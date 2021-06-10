@@ -31,6 +31,7 @@ spec:
       serviceAccountName: {{ include "netdata.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      hostNetwork: true
       containers:
         - name: manager
           command:
