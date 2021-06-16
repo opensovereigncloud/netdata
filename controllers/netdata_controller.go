@@ -104,17 +104,18 @@ func postData(ipv int) string {
   output=$(curl -s -X POST -H "Content-Type: application/json" -d '{ "command": "lease4-get-all", "service": [ "dhcp4" ] }' http://192.168.10.3:8000/)
 */
 
-func kealease(apiUrl string, ipv int) []Lease {
+func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 	postData := postData(ipv)
 	log.Printf("Kea post data  is #%s ", postData)
 	resp, err := http.Post(apiUrl, "application/json", strings.NewReader(postData))
 	if err != nil {
-		log.Printf("Fail request kea api: %v", err)
+		r.Log.Error(err, "Fail request kea api")
+		return []Lease{}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Fail read kea api answer: %v", err)
+		r.Log.Error(err, "Fail read kea api answer")
 	}
 
 	log.Printf("Kea result is #%s ", body)
@@ -375,14 +376,15 @@ func (mergeRes NetdataMap) processNDP(msg ndp.Message, from net.IP) {
 	fmt.Printf("ndp: neighbor advertisement from %s:\n", from)
 	fmt.Printf("  - solicited: %t\n", na.Solicited)
 	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
-	mergeRes[string(tll.Addr)] = dev1.NetdataSpec{
-		IPV6Address: string(from),
-		MACAddress:  string(tll.Addr),
+	mergeRes[tll.Addr.String()] = dev1.NetdataSpec{
+		IPV6Address: from.String(),
+		MACAddress:  tll.Addr.String(),
 	}
+	fmt.Printf("test mergeRes for ipv6 is %+v", mergeRes[tll.Addr.String()])
 }
 
-func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf) {
-	res1 := kealease(c.KeaApi, 4)
+func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf, r *NetdataReconciler) {
+	res1 := r.kealease(c.KeaApi, 4)
 	for idx := range res1 {
 		k := &res1[idx]
 		mergeRes[k.HwAddress] = dev1.NetdataSpec{
@@ -392,7 +394,7 @@ func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf) {
 		}
 	}
 
-	res2 := kealease(c.KeaApi, 6)
+	res2 := r.kealease(c.KeaApi, 6)
 	for idx := range res2 {
 		k := &res1[idx]
 		ipv6 := k.IPAddress
@@ -410,12 +412,132 @@ func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf) {
 	}
 }
 
-func receiveLoop(
-	ctx context.Context,
-	c *ndp.Conn,
-	ll *log.Logger,
-	mergeRes NetdataMap,
-) error {
+func (mergeRes NetdataMap) filterAndCreateCRD(c *netdataconf, r *NetdataReconciler, ctx context.Context, req ctrl.Request) {
+	for mk, mv := range mergeRes {
+		fit := false
+		for idx := range c.Subnets {
+			subnet := &c.Subnets[idx]
+			_, ipnetA, _ := net.ParseCIDR(*subnet)
+			if len(mv.IPAddress) > 0 {
+				ipB := net.ParseIP(mv.IPAddress)
+				if ipnetA.Contains(ipB) {
+					r.Log.Info("fit", "ip", mv.IPAddress, "  to subnet ", *subnet)
+					fit = true
+					createNetCRD(mv.IPAddress, mv.IPV6Address, mv.MACAddress, *subnet, c, ctx, r, req)
+					break
+				}
+			}
+			if len(mv.IPV6Address) > 0 {
+				r.Log.Info("ipv6 address for check ", "ipv6", mv.IPV6Address)
+				ipB6 := net.ParseIP(mv.IPV6Address)
+				if ipnetA.Contains(ipB6) {
+					r.Log.Info("fit", "ip", ipB6, "  to subnet ", *subnet)
+					fit = true
+					createNetCRD(mv.IPAddress, mv.IPV6Address, mv.MACAddress, *subnet, c, ctx, r, req)
+					break
+				}
+			}
+		}
+		if fit {
+			r.Log.Info("fit to subnet")
+		} else {
+			r.Log.Info("NOT fit to subnet", "DELETE", mk)
+			delete(mergeRes, mk)
+			fmt.Printf("Merge is %+v\n", mergeRes)
+		}
+	}
+}
+
+func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
+	// Select a network interface by its name to use for NDP communications.
+	ifi, err := net.InterfaceByName(c.Interface)
+	if err != nil {
+		r.Log.Error(err, " .failed to get interface.")
+	}
+
+	// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
+	ndpconn, ip, err := ndp.Dial(ifi, ndp.LinkLocal)
+	if err != nil {
+		r.Log.Error(err, ".failed to dial NDP connection.")
+		return
+	}
+	// Clean up after the connection is no longer needed.
+	defer ndpconn.Close()
+
+	fmt.Println("ndp: bound to address:", ip)
+	// Choose a target with a known IPv6 link-local address.
+	target := net.ParseIP("fe80::")
+
+	// Use target's solicited-node multicast address to request that the target
+	// respond with a neighbor advertisement.
+	snm, err := ndp.SolicitedNodeMulticast(target)
+	if err != nil {
+		r.Log.Error(err, " .failed to determine solicited-node multicast address.")
+	}
+
+	// Build a neighbor solicitation message, indicate the target's link-local
+	// address, and also specify our source link-layer address.
+	m := &ndp.NeighborSolicitation{
+		TargetAddress: target,
+		Options: []ndp.Option{
+			&ndp.LinkLayerAddress{
+				Direction: ndp.Source,
+				Addr:      ifi.HardwareAddr,
+			},
+		},
+	}
+
+	// Send the multicast message and wait for a response.
+	if err := ndpconn.WriteTo(m, nil, snm); err != nil {
+		r.Log.Error(err, " .failed to write neighbor solicitation.")
+	}
+
+	ll := log.New(os.Stderr, "ndp ns> ", 0)
+	if err := mergeRes.receiveLoop(ctx, ndpconn, ll); err != nil {
+		r.Log.Error(err, " failed to read message:")
+	}
+
+}
+
+func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
+	for idx := range c.Subnets {
+		subnet := &c.Subnets[idx]
+		r.Log.Info("Nmap scan ", "subnet", *subnet)
+		res := nmapScan(*subnet, ctx)
+		for hostidx := range res {
+			host := &res[hostidx]
+			nmapIp := host.Addresses[0].Addr
+			var nmapMac string
+			if len(host.Addresses) == 2 {
+				nmapMac = host.Addresses[1].Addr
+			} else {
+				break
+			}
+			r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+			hostname := ""
+			if len(host.Hostnames) > 0 {
+				hostname = host.Hostnames[0].Name
+			}
+			if mergeRes[nmapMac].Hostname != "" {
+				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+					hostname = mergeRes[nmapMac].Hostname
+				}
+			}
+			if mergeRes[nmapMac].IPAddress != "" {
+				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+					nmapIp = mergeRes[nmapMac].IPAddress
+				}
+			}
+			mergeRes[nmapMac] = dev1.NetdataSpec{
+				IPAddress:  nmapIp,
+				MACAddress: nmapMac,
+				Hostname:   hostname,
+			}
+		}
+	}
+}
+
+func (mergeRes NetdataMap) receiveLoop(ctx context.Context, c *ndp.Conn, ll *log.Logger) error {
 	var count int
 	for i := 0; i < 10; i++ {
 		ll.Printf("loop %d", i)
@@ -429,7 +551,7 @@ func receiveLoop(
 			continue
 		case nil:
 			count++
-			printMessage(ll, msg, from, mergeRes)
+			mergeRes.printMessage(ll, msg, from)
 		default:
 			return err
 		}
@@ -477,7 +599,7 @@ func indexOf(element string, data []string) int {
 	return -1 //not found.
 }
 
-func printMessage(ll *log.Logger, m ndp.Message, from net.IP, mergeRes NetdataMap) {
+func (mergeRes NetdataMap) printMessage(ll *log.Logger, m ndp.Message, from net.IP) {
 	switch m := m.(type) {
 	case *ndp.NeighborAdvertisement:
 		mergeRes.processNDP(m, from)
@@ -545,120 +667,19 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// ttl
 	var now metav1.Time = metav1.Time{Time: time.Now()}
 	checkttl(r, ctx, req, now)
-
-	// ipv6 neighbour
-	// Select a network interface by its name to use for NDP communications.
-	ifi, err := net.InterfaceByName(c.Interface)
-	if err != nil {
-		r.Log.Error(err, " .failed to get interface.")
-	}
-
-	// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
-	ndpconn, ip, err := ndp.Dial(ifi, ndp.LinkLocal)
-	if err != nil {
-		r.Log.Error(err, ".failed to dial NDP connection.")
-	}
-	// Clean up after the connection is no longer needed.
-	defer ndpconn.Close()
-
-	fmt.Println("ndp: bound to address:", ip)
-	// Choose a target with a known IPv6 link-local address.
-	target := net.ParseIP("fe80::")
-
-	// Use target's solicited-node multicast address to request that the target
-	// respond with a neighbor advertisement.
-	snm, err := ndp.SolicitedNodeMulticast(target)
-	if err != nil {
-		r.Log.Error(err, " .failed to determine solicited-node multicast address.")
-	}
-
-	// Build a neighbor solicitation message, indicate the target's link-local
-	// address, and also specify our source link-layer address.
-	m := &ndp.NeighborSolicitation{
-		TargetAddress: target,
-		Options: []ndp.Option{
-			&ndp.LinkLayerAddress{
-				Direction: ndp.Source,
-				Addr:      ifi.HardwareAddr,
-			},
-		},
-	}
-
-	// Send the multicast message and wait for a response.
-	if err := ndpconn.WriteTo(m, nil, snm); err != nil {
-		r.Log.Error(err, " .failed to write neighbor solicitation.")
-	}
-
-	ll := log.New(os.Stderr, "ndp ns> ", 0)
-	if err := receiveLoop(ctx, ndpconn, ll, mergeRes); err != nil {
-		r.Log.Error(err, " failed to read message:")
-	}
-
 	// kea api
-	mergeRes.kealeaseProcess(&c)
-
+	mergeRes.kealeaseProcess(&c, r)
+	// ipv6 neighbour
+	mergeRes.ndpProcess(&c, r, ctx)
+	fmt.Printf("Merge after ipv6 is %+v\n", mergeRes)
 	// nmap
-	for idx := range c.Subnets {
-		subnet := &c.Subnets[idx]
-		r.Log.Info("Nmap scan ", "subnet", *subnet)
-		res := nmapScan(*subnet, ctx)
-		for hostidx := range res {
-			host := &res[hostidx]
-			nmapIp := host.Addresses[0].Addr
-			var nmapMac string
-			if len(host.Addresses) == 2 {
-				nmapMac = host.Addresses[1].Addr
-			} else {
-				break
-			}
-			r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
-			hostname := ""
-			if len(host.Hostnames) > 0 {
-				hostname = host.Hostnames[0].Name
-			}
-			if mergeRes[nmapMac].Hostname != "" {
-				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
-					hostname = mergeRes[nmapMac].Hostname
-				}
-			}
-			if mergeRes[nmapMac].IPAddress != "" {
-				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
-					nmapIp = mergeRes[nmapMac].IPAddress
-				}
-			}
-			mergeRes[nmapMac] = dev1.NetdataSpec{
-				IPAddress:  nmapIp,
-				MACAddress: nmapMac,
-				Hostname:   hostname,
-			}
-		}
-	}
+	mergeRes.nmapProcess(&c, r, ctx)
 
 	fmt.Printf("Merge is %+v\n", mergeRes)
 
 	// filter nets
 	// save new crd
-	for mk, mv := range mergeRes {
-		fit := false
-		for idx := range c.Subnets {
-			subnet := &c.Subnets[idx]
-			_, ipnetA, _ := net.ParseCIDR(*subnet)
-			ipB := net.ParseIP(mv.IPAddress)
-			if ipnetA.Contains(ipB) {
-				r.Log.Info("fit", "ip", mv.IPAddress, "  to subnet ", *subnet)
-				fit = true
-				createNetCRD(mv.IPAddress, mv.IPV6Address, mv.MACAddress, *subnet, &c, ctx, r, req)
-				break
-			}
-		}
-		if fit {
-			r.Log.Info("fit to subnet")
-		} else {
-			r.Log.Info("NOT fit to subnet", "DELETE", mk)
-			delete(mergeRes, mk)
-			fmt.Printf("Merge is %+v\n", mergeRes)
-		}
-	}
+	mergeRes.filterAndCreateCRD(&c, r, ctx, req)
 
 	return ctrl.Result{}, nil
 }
