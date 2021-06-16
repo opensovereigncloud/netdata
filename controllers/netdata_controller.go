@@ -380,7 +380,6 @@ func (mergeRes NetdataMap) processNDP(msg ndp.Message, from net.IP) {
 		IPV6Address: from.String(),
 		MACAddress:  tll.Addr.String(),
 	}
-	fmt.Printf("test mergeRes for ipv6 is %+v", mergeRes[tll.Addr.String()])
 }
 
 func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf, r *NetdataReconciler) {
@@ -499,40 +498,56 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 
 }
 
+func ipVersion(s string) string {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '.':
+			return "ipv4"
+		case ':':
+			return "ipv6"
+		}
+	}
+	return ""
+}
+
 func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
 	for idx := range c.Subnets {
 		subnet := &c.Subnets[idx]
 		r.Log.Info("Nmap scan ", "subnet", *subnet)
-		res := nmapScan(*subnet, ctx)
-		for hostidx := range res {
-			host := &res[hostidx]
-			nmapIp := host.Addresses[0].Addr
-			var nmapMac string
-			if len(host.Addresses) == 2 {
-				nmapMac = host.Addresses[1].Addr
-			} else {
-				break
-			}
-			r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
-			hostname := ""
-			if len(host.Hostnames) > 0 {
-				hostname = host.Hostnames[0].Name
-			}
-			if mergeRes[nmapMac].Hostname != "" {
-				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
-					hostname = mergeRes[nmapMac].Hostname
+		if ipVersion(*subnet) == "ipv4" {
+			res := nmapScan(*subnet, ctx)
+			for hostidx := range res {
+				host := &res[hostidx]
+				nmapIp := host.Addresses[0].Addr
+				var nmapMac string
+				if len(host.Addresses) == 2 {
+					nmapMac = host.Addresses[1].Addr
+				} else {
+					break
+				}
+				r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+				hostname := ""
+				if len(host.Hostnames) > 0 {
+					hostname = host.Hostnames[0].Name
+				}
+				if mergeRes[nmapMac].Hostname != "" {
+					if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+						hostname = mergeRes[nmapMac].Hostname
+					}
+				}
+				if mergeRes[nmapMac].IPAddress != "" {
+					if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
+						nmapIp = mergeRes[nmapMac].IPAddress
+					}
+				}
+				mergeRes[nmapMac] = dev1.NetdataSpec{
+					IPAddress:  nmapIp,
+					MACAddress: nmapMac,
+					Hostname:   hostname,
 				}
 			}
-			if mergeRes[nmapMac].IPAddress != "" {
-				if indexOf("kea", c.IPPrio) > indexOf("nmap", c.IPPrio) {
-					nmapIp = mergeRes[nmapMac].IPAddress
-				}
-			}
-			mergeRes[nmapMac] = dev1.NetdataSpec{
-				IPAddress:  nmapIp,
-				MACAddress: nmapMac,
-				Hostname:   hostname,
-			}
+		} else {
+			r.Log.Info("Skip nmap scanning for ipv6", "subnet", *subnet)
 		}
 	}
 }
@@ -671,11 +686,8 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	mergeRes.kealeaseProcess(&c, r)
 	// ipv6 neighbour
 	mergeRes.ndpProcess(&c, r, ctx)
-	fmt.Printf("Merge after ipv6 is %+v\n", mergeRes)
 	// nmap
 	mergeRes.nmapProcess(&c, r, ctx)
-
-	fmt.Printf("Merge is %+v\n", mergeRes)
 
 	// filter nets
 	// save new crd
