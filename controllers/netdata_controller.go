@@ -486,7 +486,7 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 		}
 
 		// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
-		ndpconn, ip, err := ndp.Dial(ifi, ndp.LinkLocal)
+		ndpconn, ip, err := ndp.Listen(ifi, ndp.LinkLocal)
 		if err != nil {
 			r.Log.Error(err, ".failed to dial NDP connection.")
 			return

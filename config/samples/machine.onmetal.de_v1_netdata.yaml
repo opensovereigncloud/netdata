@@ -3,6 +3,7 @@ kind: Netdata
 metadata:
   name: '16bf7b2f8e6c'
   labels:
+    ip-127_0_0_1: ""
     ip-10_20_30_40: ""
     ip-fe80__14bf_7bff_fe2f_8e6c: ""
     subnet-10_20_30_40slash24: ""
