@@ -28,11 +28,7 @@ type NetdataSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// +kubebuilder:validation:Pattern=`^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$`
-	IPAddress string `json:"ipAddress,omitempty"`
-
-	// +kubebuilder:validation:Pattern=`^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$`
-	IPV6Address string `json:"ipv6Address,omitempty"`
+	Addresses []IPsubnet `json:"addresses,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$`
@@ -41,10 +37,15 @@ type NetdataSpec struct {
 	// +kubebuilder:validation:Required
 	Expiration metav1.Time `json:"expiration,omitempty"`
 
-	// +kubebuilder:validation:Required
-	Subnet string `json:"subnet,omitempty"`
+	Hostname []string `json:"hostname,omitempty"`
+}
 
-	Hostname string `json:"hostname,omitempty"`
+type IPsubnet struct {
+	// +kubebuilder:validation:Required
+	IPS []string `json:"ips"`
+
+	// +kubebuilder:validation:Required
+	Subnet string `json:"subnet"`
 }
 
 // NetdataStatus defines the observed state of Netdata

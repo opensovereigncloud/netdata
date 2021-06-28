@@ -88,11 +88,14 @@ var _ = ginkgo.Describe("Sshpublickey Controller delete expired", func() {
 
 			var early metav1.Time = metav1.Time{Time: time.Now().Add(-120 * time.Minute)}
 
+			ipsubnet := dev1.IPsubnet{
+				IPS:    []string{"10.20.30.40"},
+				Subnet: "10.20.30.0/24",
+			}
 			keySpec := dev1.NetdataSpec{
-				IPAddress:  "10.20.30.40",
+				Addresses:  []dev1.IPsubnet{ipsubnet},
 				MACAddress: "52:54:00:b4:c2:63",
 				Expiration: early,
-				Subnet:     "10.20.30.0/24",
 			}
 
 			createKey(name, namespace, keySpec)
@@ -114,16 +117,22 @@ var _ = ginkgo.Describe("Sshpublickey Controller wrong data", func() {
 	})
 	ginkgo.Context("Sshpublickey Controller bad data", func() {
 		ginkgo.It("Should create successfully and wrong parsing", func() {
+
 			nsSpecs := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 			gomega.Expect(k8sClient.Create(context.Background(), nsSpecs)).Should(gomega.Succeed())
 
 			var later metav1.Time = metav1.Time{Time: time.Now().Add(120 * time.Minute)}
 
+			ips := []string{"10.20.130.140"}
+			ipsubnet := dev1.IPsubnet{
+				IPS:    ips,
+				Subnet: "10.20.130.0/24",
+			}
+
 			keySpec := dev1.NetdataSpec{
-				IPAddress:  "A.20.130.140",
-				MACAddress: "52:54:11:b4:c2:63",
+				Addresses:  []dev1.IPsubnet{ipsubnet},
+				MACAddress: "AAA52:54:11:b4:c2:63",
 				Expiration: later,
-				Subnet:     "10.20.130.0/24",
 			}
 
 			created := &dev1.Netdata{
@@ -133,7 +142,9 @@ var _ = ginkgo.Describe("Sshpublickey Controller wrong data", func() {
 				},
 				Spec: keySpec,
 			}
+
 			gomega.Expect(k8sClient.Create(context.Background(), created)).ShouldNot(gomega.Succeed())
+
 		})
 	})
 })

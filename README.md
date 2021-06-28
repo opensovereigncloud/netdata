@@ -2,7 +2,7 @@
 
 ```
 kubectl create ns test
-helm install -n test test1 ./chart
+helm install netdata ./chart -n onmetal  --set image.repository=localhost/netdata
 ```
 
 
