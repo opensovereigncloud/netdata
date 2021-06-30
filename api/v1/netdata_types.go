@@ -28,6 +28,7 @@ type NetdataSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	// +kubebuilder:validation:MinItems=1
 	Addresses []IPsubnet `json:"addresses,omitempty"`
 
 	// +kubebuilder:validation:Required
@@ -42,10 +43,16 @@ type NetdataSpec struct {
 
 type IPsubnet struct {
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
 	IPS []string `json:"ips"`
 
 	// +kubebuilder:validation:Required
 	Subnet string `json:"subnet"`
+
+	// https://github.com/kubernetes/kubernetes/issues/72220
+
+	// +kubebuilder:default:='ipv4'
+	IPType string `json:"iptype"`
 }
 
 // NetdataStatus defines the observed state of Netdata
@@ -54,8 +61,12 @@ type NetdataStatus struct {
 	// Important: Run "make" to regenerate code after modifying this file
 }
 
-// +kubebuilder:object:root=true
+// https://github.com/kubernetes/kubectl/issues/517
 
+// +kubebuilder:printcolumn:name="Hostnames(only first)",type=string,JSONPath=`.spec.hostname[*]`
+// +kubebuilder:printcolumn:name="IPv4",type=string,JSONPath=`.spec.addresses[?(@.iptype == 'ipv4')].ips[*]`
+// +kubebuilder:printcolumn:name="IPv6",type=string,JSONPath=`.spec.addresses[?(@.iptype == 'ipv6')].ips[*]`
+// +kubebuilder:object:root=true
 // Netdata is the Schema for the netdata API
 type Netdata struct {
 	metav1.TypeMeta   `json:",inline"`

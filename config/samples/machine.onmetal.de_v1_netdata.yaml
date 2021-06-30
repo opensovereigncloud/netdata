@@ -11,9 +11,11 @@ metadata:
 spec:
   addresses:
     - subnet: '10.20.30.0/24'
+      iptype: ipv4
       ips:
         - '10.20.30.40'
     - subnet: 'fe80::'
+      iptype: ipv6
       ips:
         - 'fe80::14bf:7bff:fe2f:8e6c'
   macAddress: '16:bf:7b:2f:8e:6c'

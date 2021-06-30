@@ -16,7 +16,17 @@ spec:
     singular: netdata
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname[*]
+      name: Hostnames(only first)
+      type: string
+    - jsonPath: .spec.addresses[?(@.iptype == 'ipv4')].ips[*]
+      name: IPv4
+      type: string
+    - jsonPath: .spec.addresses[?(@.iptype == 'ipv6')].ips[*]
+      name: IPv6
+      type: string
+    name: v1
     schema:
       openAPIV3Schema:
         description: Netdata is the Schema for the netdata API
@@ -38,13 +48,19 @@ spec:
                     ips:
                       items:
                         type: string
+                      minItems: 1
                       type: array
+                    iptype:
+                      default: '''ipv4'''
+                      type: string
                     subnet:
                       type: string
                   required:
                   - ips
+                  - iptype
                   - subnet
                   type: object
+                minItems: 1
                 type: array
               expiration:
                 format: date-time
@@ -63,6 +79,7 @@ spec:
         type: object
     served: true
     storage: true
+    subresources: {}
 status:
   acceptedNames:
     kind: ""

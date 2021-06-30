@@ -274,8 +274,10 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 			ip := ips[jdx]
 			if ipVersion(ip) == "ipv6" {
 				labels["ip-"+strings.ReplaceAll(ip, ":", "_")] = ""
+				ipsubnet.IPType = "ipv6"
 			} else {
 				labels["ip-"+strings.ReplaceAll(ip, ".", "_")] = ""
+				ipsubnet.IPType = "ipv4"
 			}
 		}
 	}
@@ -395,6 +397,7 @@ func (mergeRes NetdataMap) processNDP(msg ndp.Message, from net.IP, c *netdataco
 		ipsubnet := dev1.IPsubnet{
 			IPS:    ips,
 			Subnet: subnet,
+			IPType: "ipv6",
 		}
 		mergeRes[tll.Addr.String()] = dev1.NetdataSpec{
 			Addresses:  []dev1.IPsubnet{ipsubnet},
