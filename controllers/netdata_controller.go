@@ -270,14 +270,13 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 	for idx := range mv.Addresses {
 		ipsubnet := &mv.Addresses[idx]
 		ips := ipsubnet.IPS
+		ipsubnet.IPType = ipVersion(ips[0])
 		for jdx := range ips {
 			ip := ips[jdx]
 			if ipVersion(ip) == "ipv6" {
 				labels["ip-"+strings.ReplaceAll(ip, ":", "_")] = ""
-				ipsubnet.IPType = "ipv6"
 			} else {
 				labels["ip-"+strings.ReplaceAll(ip, ".", "_")] = ""
-				ipsubnet.IPType = "ipv4"
 			}
 		}
 	}
