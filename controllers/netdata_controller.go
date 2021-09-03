@@ -272,12 +272,7 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 		ips := ipsubnet.IPS
 		ipsubnet.IPType = ipVersion(ips[0])
 		for jdx := range ips {
-			ip := ips[jdx]
-			if ipVersion(ip) == "ipv6" {
-				labels["ip-"+strings.ReplaceAll(ip, ":", "_")] = ""
-			} else {
-				labels["ip-"+strings.ReplaceAll(ip, ".", "_")] = ""
-			}
+			labels[LabelForIP(ips[jdx])] = ""
 		}
 	}
 	netcrd := &dev1.Netdata{
@@ -528,6 +523,14 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 		if err := mergeRes.receiveLoop(ctx, ndpconn, ll, c); err != nil {
 			r.Log.Error(err, " failed to read message:")
 		}
+	}
+}
+
+func LabelForIP(ip string) string {
+	if ipVersion(ip) == "ipv6" {
+		return "ip-" + strings.ReplaceAll(ip, ":", "_")
+	} else {
+		return "ip-" + strings.ReplaceAll(ip, ".", "_")
 	}
 }
 
