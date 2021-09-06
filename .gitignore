@@ -6,6 +6,7 @@
 *.so
 *.dylib
 bin
+vendor
 
 # Test binary, build with `go test -c`
 *.test
@@ -16,6 +17,8 @@ bin
 # Kubernetes Generated files - skip generated files, except for vendored files
 
 !vendor/**/zz_generated.*
+
+
 
 # editor and IDE paraphernalia
 .idea
