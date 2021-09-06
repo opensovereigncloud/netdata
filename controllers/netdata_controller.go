@@ -270,9 +270,9 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 	for idx := range mv.Addresses {
 		ipsubnet := &mv.Addresses[idx]
 		ips := ipsubnet.IPS
-		ipsubnet.IPType = ipVersion(ips[0])
+		ipsubnet.IPType = dev1.IpVersion(ips[0])
 		for jdx := range ips {
-			labels[LabelForIP(ips[jdx])] = ""
+			labels[dev1.LabelForIP(ips[jdx])] = ""
 		}
 	}
 	netcrd := &dev1.Netdata{
@@ -526,32 +526,12 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 	}
 }
 
-func LabelForIP(ip string) string {
-	if ipVersion(ip) == "ipv6" {
-		return "ip-" + strings.ReplaceAll(ip, ":", "_")
-	} else {
-		return "ip-" + strings.ReplaceAll(ip, ".", "_")
-	}
-}
-
-func ipVersion(s string) string {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '.':
-			return "ipv4"
-		case ':':
-			return "ipv6"
-		}
-	}
-	return ""
-}
-
 func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
 	for idx := range c.Nmap {
 		subnet := &c.Nmap[idx]
 		r.Log.Info("Nmap scan ", "subnet", *subnet)
 
-		if ipVersion(*subnet) == "ipv4" {
+		if dev1.IpVersion(*subnet) == "ipv4" {
 			res := nmapScan(*subnet, ctx)
 
 			for hostidx := range res {
