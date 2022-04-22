@@ -1,0 +1,14 @@
+apiVersion: ipam.onmetal.de/v1alpha1
+kind: Subnet
+metadata:
+  name: local-v6
+  labels:
+    labelsubnet: "oob"
+spec:
+  cidr: fe80::/64
+  network:
+    name: local-v6-network
+  regions:
+  - availabilityZones:
+    - A
+    name: eu-west

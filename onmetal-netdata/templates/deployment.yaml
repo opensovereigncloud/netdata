@@ -1,6 +1,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  annotations:
+    configmap.reloader.stakater.com/reload: "netdata-config"
   name: {{ include "netdata.fullname" . }}
   labels:
     {{- include "netdata.labels" . | nindent 4 }}
@@ -33,7 +35,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       hostNetwork: true
       containers:
-        - name: manager
+        - name: manager-nmap
           command:
           - /manager
           args:
@@ -45,6 +47,43 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: NETSOURCE
+            value: "nmap"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        - name: manager-ndp
+          command:
+          - /manager
+          args:
+          - --enable-leader-election
+          volumeMounts:
+          - name: netdata-config
+            mountPath: /etc/manager
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: NETSOURCE
+            value: "ndp"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        - name: manager-kea
+          command:
+          - /manager
+          args:
+          - --enable-leader-election
+          volumeMounts:
+          - name: netdata-config
+            mountPath: /etc/manager
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: NETSOURCE
+            value: "kea"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

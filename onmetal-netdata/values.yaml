@@ -13,9 +13,9 @@ labels:
 
 
 image:
-  repository: localhost/netdata
-  pullPolicy: IfNotPresent
-  tag: "1"
+  repository: core.harbor.onmetal.de/onmetal/netdata-ipam
+  pullPolicy: Always
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""

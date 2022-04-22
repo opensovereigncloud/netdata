@@ -1,6 +1,6 @@
 
 # Image URL to use all building/pushing image targets
-IMG ?= netdata:1
+IMG ?= netdata-ipam:1
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:trivialVersions=true"
 
@@ -15,13 +15,14 @@ all: manager
 
 # Run tests
 test: generate fmt vet manifests
-	golangci-lint run ./...
-	go test ./... -coverprofile cover.out
+	#golangci-lint run ./...
+	USE_EXISTING_CLUSTER=true go test ./... -coverprofile cover.out
 
 # Build manager binary
 manager: generate fmt vet
 	go build -gcflags='-m -N -l' -o bin/manager main.go
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go build -a -o manager main.go
+	sudo setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip  /usr/bin/nmap
 	sudo setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip ./manager
 
 # Run against the configured Kubernetes cluster in ~/.kube/config
@@ -59,22 +60,22 @@ generate: controller-gen
 
 # Build the podman image
 podman-build:
-	podman -r build . -t ${IMG}
-	minikube ssh "sudo sh -c 'podman save localhost/${IMG} | docker load'"
+	podman -r build . -t ${IMG} --build-arg GOPRIVATE=${GOPRIVATE} --build-arg GIT_USER=${GIT_USER} --build-arg GIT_PASSWORD=${GIT_PASSWORD}
+	minikube ssh "sudo sh -c 'podman save localhost/${IMG} | podman load'"
 
-# Push the docker image
+# Push the podman image
 podman-push:
 	podman -r push  ${IMG}
 
-# Build the docker image
+# Build the podman image
 docker-build: test
-	docker build . -t ${IMG}
+	podman build . -t ${IMG} --build-arg GOPRIVATE=${GOPRIVATE} --build-arg GIT_USER=${GIT_USER} --build-arg GIT_PASSWORD=${GIT_PASSWORD}
 
-# Push the docker image
+# Push the podman image
 docker-push:
-	docker push ${IMG}
+	podman push ${IMG}
 
-KUSTOMIZE = $(shell pwd)/bin/kustomize
+KUSTOMIZE = /usr/local/bin/kustomize
 kustomize: ## Download kustomize locally if necessary.
 	$(call go-get-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v3@v3.8.7)
 

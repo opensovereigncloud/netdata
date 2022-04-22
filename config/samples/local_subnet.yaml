@@ -1,0 +1,15 @@
+apiVersion: ipam.onmetal.de/v1alpha1
+kind: Subnet
+metadata:
+  name: test192168178
+  labels:
+    labelsubnet: "oob"
+spec:
+  cidr: "192.168.178.0/24"
+  network:
+    name: network-192_168_178_1
+  regions:
+    - name: euw
+      availabilityZones:
+        - a
+        - b

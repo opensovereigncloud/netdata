@@ -29,3 +29,27 @@ rules:
       - get
       - patch
       - update
+  - apiGroups:
+      - ipam.onmetal.de
+    resources:
+      - subnets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ipam.onmetal.de
+    resources:
+      - ips
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch

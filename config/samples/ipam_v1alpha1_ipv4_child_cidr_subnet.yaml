@@ -1,0 +1,15 @@
+apiVersion: ipam.onmetal.de/v1alpha1
+kind: Subnet
+metadata:
+  name: ipv4-child-cidr-subnet-sample
+  labels:
+    labelsubnet: "oob"
+spec:
+  cidr: "10.0.0.0/16"
+  network:
+    name: network-sample
+  regions:
+    - name: euw
+      availabilityZones:
+        - a
+        - b

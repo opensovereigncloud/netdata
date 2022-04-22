@@ -19,7 +19,10 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
+	"github.com/onmetal/ipam/api/v1alpha1"
+	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -41,6 +44,10 @@ func init() {
 
 	_ = machineonmetaldev1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
+
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		errors.Wrap(err, "unable to add registered types to client scheme")
+	}
 }
 
 func main() {
@@ -54,12 +61,14 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
+	var syncPeriod = 360 * time.Second
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
 		MetricsBindAddress: metricsAddr,
 		Port:               9443,
 		LeaderElection:     enableLeaderElection,
 		LeaderElectionID:   "d0afb540.onmetal.de",
+		SyncPeriod:         &(syncPeriod),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

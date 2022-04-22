@@ -21,10 +21,11 @@ import (
 	"fmt"
 	"time"
 
+	nmap "github.com/Ullaakut/nmap/v2"
 	dev1 "github.com/onmetal/netdata/api/v1"
-
 	ginkgo "github.com/onsi/ginkgo"
 	gomega "github.com/onsi/gomega"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,18 +39,19 @@ var _ = ginkgo.Describe("Netdata Controller", func() {
 	var (
 		name      = "key"
 		namespace = "ns-tests"
+		nsSpecs   = &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 	)
 
 	ginkgo.BeforeEach(func() {
 	})
 
 	ginkgo.AfterEach(func() {
+		gomega.Expect(k8sClient.Delete(context.Background(), nsSpecs)).Should(gomega.Succeed())
 	})
 
 	ginkgo.Context("Netdata Controller Test", func() {
 
 		ginkgo.It("Should create successfully", func() {
-			nsSpecs := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 			gomega.Expect(k8sClient.Create(context.Background(), nsSpecs)).Should(gomega.Succeed())
 
 			var later metav1.Time = metav1.Time{Time: time.Now().Add(120 * time.Minute)}
@@ -69,11 +71,13 @@ var _ = ginkgo.Describe("Netdata Controller", func() {
 	})
 })
 
-var _ = ginkgo.Describe("Sshpublickey Controller delete expired", func() {
+var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 
 	var (
-		name      = "key-expired"
-		namespace = "ns-tests-expired"
+		name                  = "key-expired"
+		namespace             = "ns-tests-expired"
+		nsSpecs               = &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		early     metav1.Time = metav1.Time{Time: time.Now().Add(-120 * time.Minute)}
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -81,12 +85,96 @@ var _ = ginkgo.Describe("Sshpublickey Controller delete expired", func() {
 
 	ginkgo.AfterEach(func() {
 	})
+
+	ginkgo.Context("Test toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error)", func() {
+		ginkgo.It("toNetdataMap", func() {
+			host := nmap.Host{}
+			subnet := "1.2.3.0/24"
+			var expectedVal NetdataMap
+			res, err := toNetdataMap(&host, subnet)
+			gomega.Expect(res).To(gomega.Equal(expectedVal))
+			gomega.Expect(err).To(gomega.HaveOccurred())
+			gomega.Expect(err.Error()).To(gomega.Equal("No data for new crd"))
+		})
+	})
+
+	ginkgo.Context("Test NetdataMap.add2map() function", func() {
+		ginkgo.It("Add NetdataSpec one by one", func() {
+
+			mergeRes := make(NetdataMap)
+
+			mac := "11:11:11:11:11:11"
+			ipsubnet := dev1.IPsubnet{
+				IPS:    []string{"10.20.30.40"},
+				Subnet: "10.20.30.0/24",
+			}
+			keySpec := dev1.NetdataSpec{
+				Addresses:  []dev1.IPsubnet{ipsubnet},
+				MACAddress: mac,
+				Hostname:   []string{"test1"},
+			}
+
+			mergeRes.add2map(mac, keySpec)
+			// added first
+			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
+			fmt.Printf(" \n\n in test mergeRes = %+v \n\n", mergeRes)
+
+			mac2 := "55:55:55:55:55:55"
+			ipsubnet2 := dev1.IPsubnet{
+				IPS:    []string{"10.55.55.55"},
+				Subnet: "10.55.55.0/24",
+			}
+			keySpec2 := dev1.NetdataSpec{
+				Addresses:  []dev1.IPsubnet{ipsubnet2},
+				MACAddress: mac2,
+				Hostname:   []string{"test2"},
+			}
+
+			mergeRes.add2map(mac2, keySpec2)
+			fmt.Printf("\n\n in test2 mergeRes = %+v \n\n", mergeRes)
+			// added second
+			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
+			gomega.Expect(mergeRes[mac2]).To(gomega.Equal(keySpec2))
+
+			ipsubnet3 := dev1.IPsubnet{
+				IPS:    []string{"192.168.77.77"},
+				Subnet: "192.168.77.0/24",
+			}
+			keySpec3 := dev1.NetdataSpec{
+				Addresses:  []dev1.IPsubnet{ipsubnet3},
+				MACAddress: mac2,
+				Hostname:   []string{"test3"},
+			}
+
+			mergeRes.add2map(mac2, keySpec3)
+			fmt.Printf("\n\n in test 3 mergeRes = %+v \n\n", mergeRes)
+			// added third
+			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
+			gomega.Expect(mergeRes[mac2]).NotTo(gomega.Equal(keySpec2))
+			gomega.Expect(len(mergeRes[mac2].Addresses)).To(gomega.Equal(2))
+			gomega.Expect(len(mergeRes[mac2].Hostname)).To(gomega.Equal(2))
+
+			ipsubnet4 := dev1.IPsubnet{
+				IPS:    []string{"192.168.77.11"},
+				Subnet: "192.168.77.0/24",
+			}
+
+			keySpec4 := dev1.NetdataSpec{
+				Addresses:  []dev1.IPsubnet{ipsubnet4},
+				MACAddress: mac2,
+				Hostname:   []string{"test3"},
+			}
+
+			mergeRes.add2map(mac2, keySpec4)
+			gomega.Expect(len(mergeRes[mac2].Addresses)).To(gomega.Equal(2))
+			gomega.Expect(len(mergeRes[mac2].Addresses[1].IPS)).To(gomega.Equal(2))
+			gomega.Expect(len(mergeRes[mac2].Hostname)).To(gomega.Equal(2))
+		})
+	})
+
 	ginkgo.Context("Controller Test deletion expired", func() {
 		ginkgo.It("Should create successfully expired", func() {
-			nsSpecs := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 			gomega.Expect(k8sClient.Create(context.Background(), nsSpecs)).Should(gomega.Succeed())
-
-			var early metav1.Time = metav1.Time{Time: time.Now().Add(-120 * time.Minute)}
 
 			ipsubnet := dev1.IPsubnet{
 				IPS:    []string{"10.20.30.40"},
@@ -99,26 +187,28 @@ var _ = ginkgo.Describe("Sshpublickey Controller delete expired", func() {
 			}
 
 			createKey(name, namespace, keySpec)
+			gomega.Expect(k8sClient.Delete(context.Background(), nsSpecs)).Should(gomega.Succeed())
 		})
 	})
 })
 
-var _ = ginkgo.Describe("Sshpublickey Controller wrong data", func() {
+var _ = ginkgo.Describe("Netdata Controller wrong data", func() {
 
 	var (
 		name      = "key-wrong"
 		namespace = "ns-tests-wrong"
+		nsSpecs   = &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 	)
 
 	ginkgo.BeforeEach(func() {
 	})
 
 	ginkgo.AfterEach(func() {
+		gomega.Expect(k8sClient.Delete(context.Background(), nsSpecs)).Should(gomega.Succeed())
 	})
-	ginkgo.Context("Sshpublickey Controller bad data", func() {
+	ginkgo.Context("Netdata Controller bad data", func() {
 		ginkgo.It("Should create successfully and wrong parsing", func() {
 
-			nsSpecs := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 			gomega.Expect(k8sClient.Create(context.Background(), nsSpecs)).Should(gomega.Succeed())
 
 			var later metav1.Time = metav1.Time{Time: time.Now().Add(120 * time.Minute)}
@@ -163,7 +253,7 @@ func createKey(name, namespace string, netdata dev1.NetdataSpec) {
 	}
 
 	gomega.Expect(k8sClient.Create(context.Background(), created)).Should(gomega.Succeed())
-	ginkgo.By("Expecting Create Successful")
+	ginkgo.By("gomega.Expecting Create Successful")
 	gomega.Eventually(func() bool {
 		keyObj := &dev1.Netdata{}
 		_ = k8sClient.Get(context.Background(), key, keyObj)

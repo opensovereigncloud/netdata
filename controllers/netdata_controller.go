@@ -17,9 +17,10 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -27,23 +28,38 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"github.com/go-logr/logr"
 	ndp "github.com/mdlayher/ndp"
-	"gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v2"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"net/http"
+	"net/netip"
 	"net/url"
 
-	"github.com/Ullaakut/nmap/v2"
+	nmap "github.com/Ullaakut/nmap/v2"
 
+	"github.com/onmetal/ipam/api/v1alpha1"
+	"github.com/onmetal/ipam/clientset"
 	dev1 "github.com/onmetal/netdata/api/v1"
 
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv6"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var errRetry = errors.New("retry")
@@ -129,12 +145,13 @@ func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 }
 
 type netdataconf struct {
-	Subnets   []string `yaml:"subnets"`
-	Nmap      []string `yaml:"nmap"`
-	Interval  int      `yaml:"interval"`
-	TTL       int      `yaml:"ttl"`
-	KeaApi    []string `yaml:"dhcp"`
-	Interface []string `yaml:"ndp"`
+	Nmap        []string          `yaml:"nmap"`
+	Interval    int               `yaml:"interval"`
+	TTL         int               `yaml:"ttl"`
+	KeaApi      []string          `yaml:"dhcp"`
+	Interface   []string          `yaml:"ndp"`
+	IPNamespace string            `default:"default" yaml:"ipnamespace"`
+	SubnetLabel map[string]string `yaml:"subnetlabel"`
 }
 
 func (c *netdataconf) getConf() *netdataconf {
@@ -155,28 +172,8 @@ func (c *netdataconf) getConf() *netdataconf {
 }
 
 func (c *netdataconf) validate() {
-	c.validateSubnets()
 	c.validateInterval()
 	c.validateKeaApi()
-}
-
-// c.Subnets not empty
-// c.Subnets each subnet is real subnet
-func (c *netdataconf) validateSubnets() {
-	if len(c.Subnets) > 0 {
-		log.Printf("at least 1 subnet")
-	} else {
-		log.Fatalf("require at least one subnet")
-		os.Exit(20)
-	}
-	for idx := range c.Subnets {
-		k := &c.Subnets[idx]
-		ipaddr, ipnet, err := net.ParseCIDR(*k)
-		if err != nil && ipaddr.String() == ipnet.IP.String() {
-			log.Fatal(err)
-			os.Exit(20)
-		}
-	}
 }
 
 // c.Interval > 50
@@ -259,6 +256,173 @@ func nmapScan(targetSubnet string, ctx context.Context) []nmap.Host {
 	return result.Hosts
 }
 
+func kubeconfigCreate() *rest.Config {
+	var kubeconfig *rest.Config
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath != "" {
+		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			log.Printf("unable to load kubeconfig from %s: %v", kubeconfigPath, err)
+		}
+		kubeconfig = config
+	} else {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			log.Printf("unable to load in-cluster config: %v", err)
+		}
+		kubeconfig = config
+	}
+	if err := v1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		errors.Wrap(err, "unable to add registered types to client scheme")
+	}
+	return kubeconfig
+}
+
+func contains(s []v1alpha1.IP, elem v1alpha1.IP) bool {
+	for _, v := range s {
+		if v.ObjectMeta.Name == elem.ObjectMeta.Name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
+	kubeconfig := kubeconfigCreate()
+
+	cs, _ := clientset.NewForConfig(kubeconfig)
+	clientSubnet := cs.IpamV1Alpha1().Subnets(c.IPNamespace)
+	client := cs.IpamV1Alpha1().IPs(c.IPNamespace)
+
+	// get subnets by label
+	labelSelector := metav1.LabelSelector{MatchLabels: c.SubnetLabel}
+
+	subnetListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
+		Limit:         100,
+	}
+	subnetList, _ := clientSubnet.List(context.Background(), subnetListOptions)
+	// select subnet by ip and ip mask
+	var subnet v1alpha1.Subnet
+	for _, k := range subnetList.Items {
+		log.Printf("               CHECK subnet from subnetlist: %s\n", k.ObjectMeta.Name)
+		if k.Spec.CIDR != nil {
+			subnetAddr := k.Spec.CIDR.String()
+			_, subnetnetA, _ := net.ParseCIDR(subnetAddr)
+			ipcur := net.ParseIP(ip.Spec.IP.String())
+			log.Printf("ip.Spec.IP.String() ip: %+v\n", ip.Spec.IP.String())
+			log.Printf("COMPARE ip: %+v\nsubnet: %+v", ipcur, subnetnetA)
+			if subnetnetA.Contains(ipcur) {
+				subnet = k
+				break
+			} else {
+				log.Printf("not fit \nip: %+v\nsubnet: %+v\n\n\n", ipcur, subnetnetA)
+			}
+		}
+	}
+	//log.Printf("\n\n\nSelected subnets: %+v\n", subnetList)
+	log.Printf("Selected subnet with ip: %+v\n\n\n", subnet.ObjectMeta.Name)
+	if subnet.ObjectMeta.Name == "" {
+		log.Printf("\nNOT FOUND proper subnet. skipped.: %+v\n", ip)
+		return
+	}
+	ip.Spec.Subnet.Name = subnet.ObjectMeta.Name
+
+	// if (do we have object with different IP address and same origin)
+	//    ->  delete object
+	labelsIPS := make(map[string]string)
+	labelsIPS["mac"] = strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
+
+	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
+	ipsListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
+		Limit:         100,
+	}
+	ipsList, _ := client.List(ctx, ipsListOptions)
+
+	// list of ip for delete
+	var deleteIPS []v1alpha1.IP
+	var notDeleteIPS []v1alpha1.IP
+	var updateLabelsIPS []v1alpha1.IP
+	for ipindex := range ipsList.Items {
+		existedIP := ipsList.Items[ipindex]
+		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
+			notDeleteIPS = append(notDeleteIPS, existedIP)
+			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
+				log.Printf("labels for current %s  existed Labels:  %+v \n\n", existedIP.ObjectMeta.Name, existedIP.ObjectMeta.Labels)
+			} else {
+				// update- add label origin-os.Getenv("NETSOURCE")
+				if existedIP.ObjectMeta.Labels["origin"] != "kea" {
+					log.Printf("add to update labels to current origin %+v \n\n", existedIP.ObjectMeta.Name)
+					updateLabelsIPS = append(updateLabelsIPS, existedIP)
+				}
+			}
+		} else {
+			log.Printf("existedIP.Spec.IP != ip.Spec.IP\n  %+v != %+v \n\n", existedIP.Spec.IP, ip.Spec.IP)
+			// ndp do not mix with nmap and kea
+			if existedIP.Spec.IP.Net.Is6() == ip.Spec.IP.Net.Is6() {
+				// mac and origin are same, but ip is different - delete
+				if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
+					log.Printf("add to delete list %+v \n\n", existedIP.ObjectMeta.Name)
+					deleteIPS = append(deleteIPS, existedIP)
+				}
+			}
+		}
+	}
+
+	// delete objects
+	for delindex := range deleteIPS {
+		existedIP := deleteIPS[delindex]
+		if contains(notDeleteIPS, existedIP) {
+			log.Printf("not deleted  %+s because in not delete array \n\n", existedIP.ObjectMeta.Name)
+		} else {
+			err := client.Delete(ctx, existedIP.ObjectMeta.Name, v1.DeleteOptions{})
+			if err != nil {
+				log.Printf("ERROR!!  delete ips %+v error +%v \n\n", existedIP, err.Error())
+			}
+			log.Printf("DELETED ips %s \n\n", existedIP.ObjectMeta.Name)
+		}
+	}
+
+	// update labels
+	for upindex := range updateLabelsIPS {
+		existedIP := updateLabelsIPS[upindex]
+		existedIP.ObjectMeta.Labels["origin"] = os.Getenv("NETSOURCE")
+		updatedIP := &v1alpha1.IP{}
+		updatedIP, err := client.Update(ctx, &existedIP, v1.UpdateOptions{})
+		if err != nil {
+			log.Printf("update error +%v ", err.Error())
+		}
+		log.Printf("Updated LABELs IP. +%v ", updatedIP)
+	}
+
+	// create ip with subnet
+	if len(notDeleteIPS) == 0 {
+		getk8sObject, err := client.Get(ctx, ip.ObjectMeta.Name, v1.GetOptions{})
+		if err != nil {
+			log.Printf("get error +%v ", err.Error())
+		}
+		if err != nil && getk8sObject.ObjectMeta.Name != "" {
+			updatedIP := &v1alpha1.IP{}
+			updatedIP, err = client.Update(ctx, &ip, v1.UpdateOptions{})
+			if err != nil {
+				log.Printf("update error +%v ", err.Error())
+			}
+			log.Printf("Updated IP. +%v ", updatedIP)
+
+		} else {
+			createdIP := &v1alpha1.IP{}
+			createdIP, err = client.Create(ctx, &ip, v1.CreateOptions{})
+			if err != nil {
+				log.Printf("create error +%v ", err.Error())
+			}
+			log.Printf("Created IP. +%s ", createdIP.ObjectMeta.Name)
+		}
+	}
+
+}
+
 func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
 	var expTime metav1.Time = metav1.Time{Time: time.Now().Add(time.Duration(conf.TTL) * time.Second)}
 	macLow := strings.ToLower(mv.MACAddress)
@@ -272,24 +436,29 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 		ips := ipsubnet.IPS
 		ipsubnet.IPType = dev1.IpVersion(ips[0])
 		for jdx := range ips {
-			labels[dev1.LabelForIP(ips[jdx])] = ""
+			labels["ip"] = ips[jdx]
 		}
 	}
-	netcrd := &dev1.Netdata{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      crdname,
-			Namespace: req.Namespace,
-			Labels:    labels,
+	labels["origin"] = os.Getenv("NETSOURCE")
+	labels["mac"] = crdname
+
+	ipaddr, _ := v1alpha1.IPAddrFromString(mv.Addresses[0].IPS[0])
+
+	ipIPAM := &v1alpha1.IP{
+		ObjectMeta: v1.ObjectMeta{
+			GenerateName: crdname + "-" + os.Getenv("NETSOURCE") + "-",
+			Namespace:    req.Namespace,
+			Labels:       labels,
 		},
-		Spec: mv,
+		Spec: v1alpha1.IPSpec{
+			Subnet: corev1.LocalObjectReference{
+				Name: "emptynameshouldnotexist",
+			},
+			IP: ipaddr,
+		},
 	}
-	_, err := ctrl.CreateOrUpdate(ctx, r, netcrd, func() error {
-		r.Log.V(0).Info("Create netdata crd ", "metadata.name", netcrd.ObjectMeta.Name)
-		return nil
-	})
-	if err != nil {
-		r.Log.Error(err, "Fail crd creation")
-	}
+
+	createIPAM(conf, ctx, *ipIPAM)
 }
 
 func optStr(o ndp.Option) string {
@@ -339,7 +508,7 @@ func optStr(o ndp.Option) string {
 	case *ndp.DNSSearchList:
 		return fmt.Sprintf("DNS search list: lifetime: %s, domain names: %s", o.Lifetime, strings.Join(o.DomainNames, ", "))
 	default:
-		panic(fmt.Sprintf("unrecognized option: %v", o))
+		return fmt.Sprintf("unrecognized option: %v", o)
 	}
 }
 
@@ -363,9 +532,88 @@ func checkttl(r *NetdataReconciler, ctx context.Context, req ctrl.Request, now m
 	}
 }
 
-func (mergeRes NetdataMap) processNDP(msg ndp.Message, from net.IP, c *netdataconf) {
+func processNDPNS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
 	// Expect a neighbor advertisement message with a target link-layer
 	// address option.
+
+	na, ok := msg.(*ndp.NeighborSolicitation)
+	if !ok {
+		log.Printf("message is not a neighbor solicitation: %T", msg)
+		return
+	}
+	if len(na.Options) != 1 {
+		log.Printf("expected one option in neighbor solicitation")
+		return
+	}
+	tll, ok := na.Options[0].(*ndp.LinkLayerAddress)
+	if !ok {
+		log.Printf("option is not a link-layer address: %T", msg)
+		return
+	}
+
+	fmt.Printf("ndp: neighbor solicitation from %s:\n", from)
+	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+
+	res := make(NetdataMap)
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	ch <- res
+}
+func processNDPRS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+	// Expect a route solicitation message with a target link-layer
+	// address option.
+
+	na, ok := msg.(*ndp.RouterSolicitation)
+	if !ok {
+		log.Printf("message is not a router solicitation: %T", msg)
+		return
+	}
+	if len(na.Options) != 1 {
+		log.Printf("expected one option in router solicitation")
+		return
+	}
+	tll, ok := na.Options[0].(*ndp.LinkLayerAddress)
+	if !ok {
+		log.Printf("option is not a link-layer address: %T", msg)
+		return
+	}
+
+	fmt.Printf("ndp: router solicitation from %s:\n", from)
+	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+
+	res := make(NetdataMap)
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	ch <- res
+}
+func processNDPRA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+	// Expect a router advertisement message with a target link-layer
+	// address option.
+
+	na, ok := msg.(*ndp.RouterAdvertisement)
+	if !ok {
+		log.Printf("message is not a router advertisement: %T", msg)
+		return
+	}
+	if len(na.Options) != 1 {
+		log.Printf("expected one option in router advertisement")
+		return
+	}
+	tll, ok := na.Options[0].(*ndp.LinkLayerAddress)
+	if !ok {
+		log.Printf("option is not a link-layer address: %T", msg)
+		return
+	}
+
+	fmt.Printf("ndp: router advertisement from %s:\n", from)
+	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+
+	res := make(NetdataMap)
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	ch <- res
+}
+func processNDPNA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+	// Expect a neighbor advertisement message with a target link-layer
+	// address option.
+
 	na, ok := msg.(*ndp.NeighborAdvertisement)
 	if !ok {
 		log.Printf("message is not a neighbor advertisement: %T", msg)
@@ -385,85 +633,84 @@ func (mergeRes NetdataMap) processNDP(msg ndp.Message, from net.IP, c *netdataco
 	fmt.Printf("  - solicited: %t\n", na.Solicited)
 	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
 
-	subnet, err := c.filterIP(from.String())
-	if err == nil {
-		ips := []string{from.String()}
-		ipsubnet := dev1.IPsubnet{
-			IPS:    ips,
-			Subnet: subnet,
-			IPType: "ipv6",
-		}
-		mergeRes[tll.Addr.String()] = dev1.NetdataSpec{
-			Addresses:  []dev1.IPsubnet{ipsubnet},
-			MACAddress: tll.Addr.String(),
-		}
-	}
+	res := make(NetdataMap)
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	ch <- res
 }
 
 func newRes(subnet string, k *Lease) dev1.NetdataSpec {
-	ips := []string{k.IPAddress}
+	return newNetdataSpec(k.HwAddress, k.IPAddress, k.Hostname, "ipv4")
+}
+
+func newNetdataSpec(mac string, ip string, hostname string, iptype string) dev1.NetdataSpec {
+	ips := []string{ip}
 	ipsubnet := dev1.IPsubnet{
 		IPS:    ips,
-		Subnet: subnet,
+		Subnet: "deleteThisField",
+		IPType: iptype,
 	}
 	return dev1.NetdataSpec{
 		Addresses:  []dev1.IPsubnet{ipsubnet},
-		MACAddress: k.HwAddress,
-		Hostname:   []string{k.Hostname},
+		MACAddress: mac,
+		Hostname:   []string{hostname},
 	}
 }
 
-func addIP2Res(subnet string, k *Lease, mergeRes NetdataMap) {
-	indexArr := len(mergeRes[k.HwAddress].Addresses)
-	ips := []string{k.IPAddress}
-	mergeRes[k.HwAddress].Addresses[indexArr] = dev1.IPsubnet{
-		IPS:    ips,
-		Subnet: subnet,
-	}
-}
-
-func (mergeRes NetdataMap) processKeaRes(res []Lease, c *netdataconf) {
-	for idx := range res {
-		k := &res[idx]
-		subnet, err := c.filterIP(k.IPAddress)
-		if err == nil {
-			indexArr := len(mergeRes[k.HwAddress].Addresses)
-			if indexArr == 0 {
-				mergeRes[k.HwAddress] = newRes(subnet, k)
-			} else {
-				addIP2Res(subnet, k, mergeRes)
-			}
+func unique(arr []string) []string {
+	occurred := map[string]bool{}
+	result := []string{}
+	for e := range arr {
+		if !occurred[arr[e]] {
+			occurred[arr[e]] = true
+			result = append(result, arr[e])
 		}
 	}
+	return result
 }
 
-func (mergeRes NetdataMap) kealeaseProcess(c *netdataconf, r *NetdataReconciler) {
+func (mergeRes NetdataMap) addIP2Res(k string, v dev1.NetdataSpec) {
+	newHostname := append(mergeRes[k].Hostname, v.Hostname...)
+	if thisMac, ok := mergeRes[k]; ok {
+		thisMac.Hostname = unique(newHostname)
+		mergeRes[k] = thisMac
+	}
+
+	for idx := range mergeRes[k].Addresses {
+		ipsubnet := &mergeRes[k].Addresses[idx]
+		// v always contain only 1 subnet
+		if ipsubnet.Subnet == v.Addresses[0].Subnet {
+			ipsubnet.IPS = append(ipsubnet.IPS, v.Addresses[0].IPS...)
+			return
+		}
+	}
+	if thisMac, ok := mergeRes[k]; ok {
+		thisMac.Addresses = append(thisMac.Addresses, v.Addresses[0])
+		mergeRes[k] = thisMac
+	}
+}
+
+func processKeaRes(res []Lease, c *netdataconf, ch chan NetdataMap) {
+	for idx := range res {
+		k := &res[idx]
+		dhcprecord := make(NetdataMap)
+		dhcprecord[k.HwAddress] = newRes("deleteFieldSubnet", k)
+		ch <- dhcprecord
+	}
+}
+
+func kealeaseProcess(c *netdataconf, r *NetdataReconciler, ch chan NetdataMap, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for kidx := range c.KeaApi {
 		keaendpoint := &c.KeaApi[kidx]
 		// fetch data from kea for ipv4
 		res1 := r.kealease(*keaendpoint, 4)
-		mergeRes.processKeaRes(res1, c)
+		processKeaRes(res1, c, ch)
 
 		// fetch data from kea for ipv6
 		res2 := r.kealease(*keaendpoint, 6)
-		mergeRes.processKeaRes(res2, c)
+		processKeaRes(res2, c, ch)
 	}
-}
-
-func (c *netdataconf) filterIP(ip string) (string, error) {
-	if len(ip) > 0 {
-		for idx := range c.Subnets {
-			subnet := &c.Subnets[idx]
-			_, ipnetA, _ := net.ParseCIDR(*subnet)
-			ipB := net.ParseIP(ip)
-			if ipnetA.Contains(ipB) {
-				return *subnet, nil
-			}
-		}
-		return "", errors.New("not fit subnets")
-	} else {
-		return "", errors.New("empty ip")
-	}
+	fmt.Print("Kea done\n")
 }
 
 func (mergeRes NetdataMap) filterAndCreateCRD(c *netdataconf, r *NetdataReconciler, ctx context.Context, req ctrl.Request) {
@@ -472,7 +719,74 @@ func (mergeRes NetdataMap) filterAndCreateCRD(c *netdataconf, r *NetdataReconcil
 	}
 }
 
-func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
+type (
+	// ICMPPayload is capable of generating a signed ICMP payload.
+	ICMPPayload struct {
+		Helo      string    `json:"h"`
+		Timestamp time.Time `json:"t"`
+	}
+)
+
+var (
+	secret = make([]byte, 16)
+
+	helo = "netdata-ipam ping-agent"
+)
+
+// NewICMPPayload returns a new ICMPPayload set to current time.
+func NewICMPPayload() *ICMPPayload {
+	return &ICMPPayload{
+		Helo:      helo,
+		Timestamp: time.Now(),
+	}
+}
+
+// Bytes returns a signed payload.
+func (p *ICMPPayload) Bytes() []byte {
+	// THis should never fail.
+	msg, _ := json.Marshal(p)
+
+	h := md5.New()
+	h.Write(secret)
+	h.Write(msg)
+	digest := h.Sum(nil)
+
+	return append(digest, msg...)
+}
+
+func (p *ICMPPayload) Read(payload []byte) error {
+	if len(payload) < 16 {
+		return errors.New("payload too short")
+	}
+
+	h := md5.New()
+	h.Write(secret)
+	h.Write(payload[16:])
+	digest := h.Sum(nil)
+
+	if !bytes.Equal(digest, payload[:16]) {
+		return errors.New("checksum error")
+	}
+
+	return json.Unmarshal(payload[16:], p)
+}
+
+func newICMPPacket6(id uint16, seq int) []byte {
+	b, _ := (&icmp.Message{
+		Type: ipv6.ICMPTypeEchoRequest,
+		Code: 0,
+		Body: &icmp.Echo{
+			ID:   int(id),
+			Seq:  seq,
+			Data: NewICMPPayload().Bytes(),
+		},
+	}).Marshal(nil)
+
+	return b
+}
+
+func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for ifidx := range c.Interface {
 		ndpif := c.Interface[ifidx]
 		r.Log.Info("Bind to interface ", ndpif, " for ndp")
@@ -493,7 +807,11 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 
 		fmt.Println("ndp: bound to address:", ip)
 		// Choose a target with a known IPv6 link-local address.
-		target := net.ParseIP("fe80::")
+		target, err := netip.ParseAddr("fe80::")
+		if err != nil {
+			r.Log.Error(err, ".failed to parse ip fe80::.")
+			return
+		}
 
 		// Use target's solicited-node multicast address to request that the target
 		// respond with a neighbor advertisement.
@@ -514,19 +832,56 @@ func (mergeRes NetdataMap) ndpProcess(c *netdataconf, r *NetdataReconciler, ctx 
 			},
 		}
 
+		// send ping6 multicast
+		// ping -I mgmt0 -6 ff02::1
+		ff02Addr, _ := netip.ParseAddr("ff02::1")
+
+		var previousID int32
+		pingid := uint16(atomic.AddInt32(&previousID, 1) & 0xffff)
+		for seq := 0; seq < 3; seq++ {
+
+			b := newICMPPacket6(pingid, seq)
+
+			err := ndpconn.WriteRaw(b, nil, ff02Addr)
+			if err != nil {
+				r.Log.Error(err, " .failed to sent ping ff02::1 address.")
+			}
+			fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
+			time.Sleep(1 * time.Second)
+		}
+
 		// Send the multicast message and wait for a response.
 		if err := ndpconn.WriteTo(m, nil, snm); err != nil {
 			r.Log.Error(err, " .failed to write neighbor solicitation.")
 		}
 
 		ll := log.New(os.Stderr, "ndp ns> ", 0)
-		if err := mergeRes.receiveLoop(ctx, ndpconn, ll, c); err != nil {
+		if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
 			r.Log.Error(err, " failed to read message:")
 		}
 	}
 }
 
-func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context) {
+func toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error) {
+	var nmapMac string
+	if len(host.Addresses) == 2 {
+		nmapMac = host.Addresses[1].Addr
+	} else {
+		return nil, errors.New("No data for new crd")
+	}
+	nmapIp := host.Addresses[0].Addr
+
+	hostname := ""
+	if len(host.Hostnames) > 0 {
+		hostname = host.Hostnames[0].Name
+	}
+	res := make(NetdataMap)
+	res[nmapMac] = newNetdataSpec(nmapMac, nmapIp, hostname, "ipv4")
+	return res, nil
+}
+
+func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for idx := range c.Nmap {
 		subnet := &c.Nmap[idx]
 		r.Log.Info("Nmap scan ", "subnet", *subnet)
@@ -536,37 +891,12 @@ func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx
 
 			for hostidx := range res {
 				host := &res[hostidx]
-				nmapIp := host.Addresses[0].Addr
-				var nmapMac string
-				if len(host.Addresses) == 2 {
-					nmapMac = host.Addresses[1].Addr
-				} else {
-					break
+				res, err := toNetdataMap(host, *subnet)
+				if err == nil {
+					r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+					ch <- res
+					r.Log.Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
 				}
-				r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
-				hostname := ""
-				if len(host.Hostnames) > 0 {
-					hostname = host.Hostnames[0].Name
-				}
-				var hostnames []string
-				if len(mergeRes[nmapMac].Hostname) > 0 {
-					hostnames = append(mergeRes[nmapMac].Hostname, hostname)
-				} else {
-					hostnames = []string{hostname}
-				}
-
-				ips := []string{nmapIp}
-				ipsubnet := dev1.IPsubnet{
-					IPS:    ips,
-					Subnet: *subnet,
-				}
-
-				mergeRes[nmapMac] = dev1.NetdataSpec{
-					Addresses:  []dev1.IPsubnet{ipsubnet},
-					MACAddress: nmapMac,
-					Hostname:   hostnames,
-				}
-
 			}
 		} else {
 			r.Log.Info("Skip nmap scanning for ipv6", "subnet", *subnet)
@@ -574,9 +904,9 @@ func (mergeRes NetdataMap) nmapProcess(c *netdataconf, r *NetdataReconciler, ctx
 	}
 }
 
-func (mergeRes NetdataMap) receiveLoop(ctx context.Context, conn *ndp.Conn, ll *log.Logger, conf *netdataconf) error {
+func receiveLoop(ctx context.Context, conn *ndp.Conn, ll *log.Logger, conf *netdataconf, ch chan NetdataMap) error {
 	var count int
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		ll.Printf("loop %d", i)
 
 		msg, from, err := receive(ctx, conn, nil)
@@ -588,7 +918,7 @@ func (mergeRes NetdataMap) receiveLoop(ctx context.Context, conn *ndp.Conn, ll *
 			continue
 		case nil:
 			count++
-			mergeRes.printMessage(ll, msg, from, conf)
+			printMessage(ll, msg, from, conf, ch)
 		default:
 			return err
 		}
@@ -596,16 +926,16 @@ func (mergeRes NetdataMap) receiveLoop(ctx context.Context, conn *ndp.Conn, ll *
 	return nil
 }
 
-func receive(ctx context.Context, c *ndp.Conn, check func(m ndp.Message) bool) (ndp.Message, net.IP, error) {
+func receive(ctx context.Context, c *ndp.Conn, check func(m ndp.Message) bool) (ndp.Message, netip.Addr, error) {
 	if err := c.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
-		return nil, nil, fmt.Errorf("failed to set deadline: %v", err)
+		return nil, netip.Addr{}, fmt.Errorf("failed to set deadline: %v", err)
 	}
 
 	msg, _, from, err := c.ReadFrom()
 	if err == nil {
 		if check != nil && !check(msg) {
 			// Read a message, but it isn't the one we want.  Keep trying.
-			return nil, nil, errRetry
+			return nil, netip.Addr{}, errRetry
 		}
 
 		// Got a message that passed the check, if check was not nil.
@@ -615,31 +945,36 @@ func receive(ctx context.Context, c *ndp.Conn, check func(m ndp.Message) bool) (
 	// Was the context canceled already?
 	select {
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+		return nil, netip.Addr{}, ctx.Err()
 	default:
 	}
 
 	// Was the error caused by a read timeout, and should the loop continue?
 	if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-		return nil, nil, errRetry
+		return nil, netip.Addr{}, errRetry
 	}
 
-	return nil, nil, fmt.Errorf("failed to read message: %v", err)
+	return nil, netip.Addr{}, fmt.Errorf("failed to read message: %v", err)
 }
 
-func (mergeRes NetdataMap) printMessage(ll *log.Logger, m ndp.Message, from net.IP, c *netdataconf) {
+func printMessage(ll *log.Logger, m ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
 	switch m := m.(type) {
 	case *ndp.NeighborAdvertisement:
-		mergeRes.processNDP(m, from, c)
+		processNDPNA(m, from, c, ch)
 		printNA(ll, m, from)
 	case *ndp.NeighborSolicitation:
+		processNDPNS(m, from, c, ch)
 		printNS(ll, m, from)
+	case *ndp.RouterAdvertisement:
+		processNDPRA(m, from, c, ch)
+	case *ndp.RouterSolicitation:
+		processNDPRS(m, from, c, ch)
 	default:
 		ll.Printf("%s %#v", from, m)
 	}
 }
 
-func printNA(ll *log.Logger, na *ndp.NeighborAdvertisement, from net.IP) {
+func printNA(ll *log.Logger, na *ndp.NeighborAdvertisement, from netip.Addr) {
 	s := fmt.Sprintf(
 		naFormat,
 		from.String(),
@@ -652,7 +987,7 @@ func printNA(ll *log.Logger, na *ndp.NeighborAdvertisement, from net.IP) {
 	ll.Print(s + optionsString(na.Options))
 }
 
-func printNS(ll *log.Logger, ns *ndp.NeighborSolicitation, from net.IP) {
+func printNS(ll *log.Logger, ns *ndp.NeighborSolicitation, from netip.Addr) {
 	s := fmt.Sprintf(
 		nsFormat,
 		from.String(),
@@ -683,8 +1018,7 @@ func writef(sw io.StringWriter, format string, a ...interface{}) {
 
 // +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata/status,verbs=get;update;patch
-func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.Log.WithValues("netdata", req.NamespacedName)
 	mergeRes := make(NetdataMap)
 
@@ -695,16 +1029,44 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	// ttl
 	var now metav1.Time = metav1.Time{Time: time.Now()}
 	checkttl(r, ctx, req, now)
-	fmt.Printf("MergeRes is %+v \n", mergeRes)
-	// kea api
-	mergeRes.kealeaseProcess(&c, r)
-	fmt.Printf("after kea MergeRes is %+v \n", mergeRes)
-	// ipv6 neighbour
-	mergeRes.ndpProcess(&c, r, ctx)
-	fmt.Printf("after ndp MergeRes is %+v \n", mergeRes)
-	// nmap
-	mergeRes.nmapProcess(&c, r, ctx)
-	fmt.Printf("after nmap MergeRes is %+v \n", mergeRes)
+	//	fmt.Printf("runtime.GOMAXPROC() = %+v \n", runtime.GOMAXPROC)
+	fmt.Printf("\nMergeRes is %+v \n", mergeRes)
+	ch := make(chan NetdataMap, 1000)
+
+	wg := sync.WaitGroup{}
+	netSource := os.Getenv("NETSOURCE")
+	switch netSource {
+	case "kea":
+		wg.Add(1)
+		go kealeaseProcess(&c, r, ch, &wg)
+		fmt.Printf("\nStarted kea \n")
+	case "ndp":
+		wg.Add(1)
+		go ndpProcess(&c, r, ctx, ch, &wg)
+		fmt.Printf("\nStarted ndp \n")
+	case "nmap":
+		wg.Add(1)
+		go nmapProcess(&c, r, ctx, ch, &wg)
+		fmt.Printf("\nStarted nmap \n")
+	default:
+		fmt.Printf("\nRequire define proper NETSOURCE environment variable. current NETSOURCE is +%v \n", netSource)
+		os.Exit(11)
+	}
+
+	wg.Wait()
+	fmt.Printf("\nWg ended \n")
+	close(ch)
+	fmt.Printf("\nch closed \n")
+
+	for entity := range ch {
+		for k, v := range entity {
+			fmt.Printf("\ntest 1  mergeRes = %+v \n", mergeRes)
+			fmt.Printf("\ntest 1  k = %+v \n", k)
+			fmt.Printf("\ntest 1  v = %+v \n", v)
+			mergeRes.add2map(k, v)
+			fmt.Printf("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
+		}
+	}
 
 	// filter nets
 	// save new crd
@@ -713,8 +1075,17 @@ func (r *NetdataReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	return ctrl.Result{}, nil
 }
 
+func (mergeRes NetdataMap) add2map(k string, v dev1.NetdataSpec) {
+	indexArr := len(mergeRes[k].Addresses)
+	if indexArr == 0 {
+		mergeRes[k] = v
+	} else {
+		mergeRes.addIP2Res(k, v)
+	}
+}
+
 func (r *NetdataReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dev1.Netdata{}).
+		For(&v1alpha1.Subnet{}).
 		Complete(r)
 }

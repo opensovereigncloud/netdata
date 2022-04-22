@@ -31,7 +31,7 @@ spec:
         - /manager
         args:
         - --enable-leader-election
-        image: docker.io/localhost/netdata:1
+        image: core.harbor.onmetal.de/onmetal/netdata-ipam:latest
         name: manager
         volumeMounts:
         - name: netdata-config

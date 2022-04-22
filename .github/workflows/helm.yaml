@@ -1,0 +1,46 @@
+name: ReleaseHelm
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  helm-lint:
+    runs-on: [ self-hosted, Linux, X64 ]
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: azure/setup-helm@v1
+        with:
+          version: 'v3.6.2'
+
+      - name: Lint Helm
+        run: |
+          helm lint onmetal-netdata --strict
+  release:
+    runs-on: [ self-hosted, Linux, X64 ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+      - name: Install Helm
+        uses: azure/setup-helm@v1
+        with:
+          version: v3.4.0
+
+      - name: Run chart-releaser
+        uses: goodsmileduck/helm-push-action@v3.3.1
+        env:
+          SOURCE_DIR: '.'
+          CHART_FOLDER: 'onmetal-netdata'
+          FORCE: 'True'
+          CHARTMUSEUM_URL: ' https://core.harbor.onmetal.de/chartrepo/onmetal'
+          CHARTMUSEUM_USER: '${{ secrets.DOCKER_USERNAME }}'
+          CHARTMUSEUM_PASSWORD: ${{ secrets.DOCKER_TOKEN }}
