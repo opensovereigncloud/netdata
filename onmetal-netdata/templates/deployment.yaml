@@ -50,6 +50,8 @@ spec:
           env:
           - name: NETSOURCE
             value: "nmap"
+          - name: RECONCILETIMEOUT
+            value: "600s"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
         - name: manager-ndp
@@ -67,6 +69,8 @@ spec:
           env:
           - name: NETSOURCE
             value: "ndp"
+          - name: RECONCILETIMEOUT
+            value: "600s"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
         - name: manager-kea
@@ -84,6 +88,8 @@ spec:
           env:
           - name: NETSOURCE
             value: "kea"
+          - name: RECONCILETIMEOUT
+            value: "600s"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

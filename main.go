@@ -50,6 +50,14 @@ func init() {
 	}
 }
 
+func getenv(key, fallback string) string {
+	value := os.Getenv(key)
+	if len(value) == 0 {
+		return fallback
+	}
+	return value
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -61,7 +69,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
-	var syncPeriod = 360 * time.Second
+	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
 		MetricsBindAddress: metricsAddr,

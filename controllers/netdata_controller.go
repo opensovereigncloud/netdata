@@ -436,7 +436,7 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 		ips := ipsubnet.IPS
 		ipsubnet.IPType = dev1.IpVersion(ips[0])
 		for jdx := range ips {
-			labels["ip"] = ips[jdx]
+			labels["ip"] = IP2Label(ips[jdx])
 		}
 	}
 	labels["origin"] = os.Getenv("NETSOURCE")
@@ -459,6 +459,14 @@ func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r
 	}
 
 	createIPAM(conf, ctx, *ipIPAM)
+}
+
+func IP2Label(ip string) string {
+	if dev1.IpVersion(ip) == "ipv6" {
+		return strings.ReplaceAll(ip, ":", "_")
+	} else {
+		return strings.ReplaceAll(ip, ".", "_")
+	}
 }
 
 func optStr(o ndp.Option) string {
