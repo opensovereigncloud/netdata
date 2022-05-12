@@ -1,0 +1,10 @@
+namespace: oob-controller-system
+nameSuffix: -oob
+
+images:
+  - name: netdata-ipam
+    newName: core.harbor.onmetal.de/onmetal/netdata-ipam
+
+resources:
+ - ../default
+

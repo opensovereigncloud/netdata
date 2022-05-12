@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"io/ioutil"
 	"os"
 	"time"
 
@@ -70,6 +71,8 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
+	ns, _ := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
 		MetricsBindAddress: metricsAddr,
@@ -77,6 +80,7 @@ func main() {
 		LeaderElection:     enableLeaderElection,
 		LeaderElectionID:   "d0afb540.onmetal.de",
 		SyncPeriod:         &(syncPeriod),
+		Namespace:          string(ns),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

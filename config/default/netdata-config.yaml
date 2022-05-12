@@ -1,0 +1,11 @@
+---
+subnets: ['10.0.0.0/24']
+nmap: ['10.0.0.0/24']
+interval: 60
+ttl: 3600
+dhcp: ['http://kea-primary.kea-dhcp.svc.cluster.local:8000/']
+ndp: ['wlp2s0']
+ipnamespace: "default"
+subnetlabel:
+  labelsubnet: "oob"
+

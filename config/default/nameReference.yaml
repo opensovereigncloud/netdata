@@ -1,0 +1,6 @@
+nameReference:
+- kind: ConfigMap
+  version: v1
+  fieldSpecs:
+    - path: metadata/annotations/configmap.reloader.stakater.com\/reload
+      kind: Deployment
