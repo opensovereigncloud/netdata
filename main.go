@@ -79,7 +79,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
-	ns := getInClusterNamespace()
+	ns, _ := getInClusterNamespace()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
