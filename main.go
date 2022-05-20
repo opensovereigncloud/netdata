@@ -18,7 +18,7 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"time"
 
@@ -59,6 +59,14 @@ func getenv(key, fallback string) string {
 	return value
 }
 
+func getInClusterNamespace() (string, error) {
+	ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("cannot determine in-cluster namespace: %w", err)
+	}
+	return string(ns), nil
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -71,7 +79,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
-	ns, _ := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	ns := getInClusterNamespace()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
@@ -80,7 +88,7 @@ func main() {
 		LeaderElection:     enableLeaderElection,
 		LeaderElectionID:   "d0afb540.onmetal.de",
 		SyncPeriod:         &(syncPeriod),
-		Namespace:          string(ns),
+		Namespace:          ns,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
