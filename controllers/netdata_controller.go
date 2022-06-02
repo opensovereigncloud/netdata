@@ -774,28 +774,6 @@ func newICMPPacket6(id uint16, seq int) []byte {
 	return b
 }
 
-func localAddresses() {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
-		return
-	}
-	for _, i := range ifaces {
-		addrs, err := i.Addrs()
-		if err != nil {
-			fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
-			continue
-		}
-		for _, a := range addrs {
-			switch v := a.(type) {
-			case *net.IPAddr:
-				fmt.Printf("%v : %s (%s)\n", i.Name, v, v.IP.DefaultMask())
-			}
-
-		}
-	}
-}
-
 func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for ifidx := range c.Interface {
@@ -804,7 +782,10 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 		// Select a network interface by its name to use for NDP communications.
 		ifi, err := net.InterfaceByName(ndpif)
 		if err != nil {
-			localAddresses()
+			ifaces, err := net.Interfaces()
+			for _, i := range ifaces {
+				r.Log.Info("interface", "name", i.Name)
+			}
 			r.Log.Error(err, " .failed to get interface.")
 		}
 
