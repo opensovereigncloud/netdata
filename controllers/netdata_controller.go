@@ -798,7 +798,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 		// Clean up after the connection is no longer needed.
 		defer ndpconn.Close()
 
-		fmt.Println("ndp: bound to address:", ip)
+		r.Log.Info("ndp:", " bound to address:", ip)
 		// Choose a target with a known IPv6 link-local address.
 		target, err := netip.ParseAddr("fe80::")
 		if err != nil {
@@ -889,7 +889,7 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 	defer wg.Done()
 	for idx := range c.Nmap {
 		subnet := &c.Nmap[idx]
-		r.Log.Info("Nmap scan ", "subnet", *subnet)
+		r.Log.V(1).Info("Nmap scan ", "subnet", *subnet)
 
 		if IpVersion(*subnet) == "ipv4" {
 			res := nmapScan(*subnet, ctx)
