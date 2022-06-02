@@ -35,3 +35,8 @@ export KUBECONFIG=~/.kube/config
 
 
 ```
+
+### debug
+```
+export DEBUG=TRUE
+```

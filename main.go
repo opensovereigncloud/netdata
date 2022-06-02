@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/onmetal/ipam/api/v1alpha1"
@@ -30,7 +31,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	machineonmetaldev1 "github.com/onmetal/netdata/api/v1"
 	"github.com/onmetal/netdata/controllers"
 	// +kubebuilder:scaffold:imports
 )
@@ -38,12 +38,12 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	ns, _    = getInClusterNamespace()
 )
 
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
-	_ = machineonmetaldev1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
@@ -51,7 +51,7 @@ func init() {
 	}
 }
 
-func getenv(key, fallback string) string {
+func getenv(key string, fallback string) string {
 	value := os.Getenv(key)
 	if len(value) == 0 {
 		return fallback
@@ -76,10 +76,10 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	debugMode, _ := strconv.ParseBool(getenv("DEBUG", "FALSE"))
+	ctrl.SetLogger(zap.New(zap.UseDevMode(debugMode)))
 
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
-	ns, _ := getInClusterNamespace()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,

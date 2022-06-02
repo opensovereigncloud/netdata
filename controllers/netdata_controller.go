@@ -51,7 +51,6 @@ import (
 
 	"github.com/onmetal/ipam/api/v1alpha1"
 	"github.com/onmetal/ipam/clientset"
-	dev1 "github.com/onmetal/netdata/api/v1"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv6"
@@ -77,7 +76,19 @@ const (
 )
 
 // NetdataMap is resulted map of discovered hosts
-type NetdataMap map[string]dev1.NetdataSpec
+type NetdataSpec struct {
+	Addresses  []IPsubnet
+	MACAddress string
+	Hostname   []string
+}
+
+type IPsubnet struct {
+	IPS    []string
+	Subnet string
+	IPType string
+}
+
+type NetdataMap map[string]NetdataSpec
 
 type KeaJson []struct {
 	Arguments Arguments `json:"arguments"`
@@ -123,7 +134,7 @@ func postData(ipv int) string {
 
 func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 	postData := postData(ipv)
-	log.Printf("Kea post data  is #%s ", postData)
+	r.Log.V(1).Info("Kea post data  is", "postData", postData)
 	resp, err := http.Post(apiUrl, "application/json", strings.NewReader(postData))
 	if err != nil {
 		r.Log.Error(err, "Fail request kea api")
@@ -135,10 +146,10 @@ func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 		r.Log.Error(err, "Fail read kea api answer")
 	}
 
-	log.Printf("Kea result is #%s ", body)
+	r.Log.V(1).Info("Kea result is #%s ", body)
 	keajson := KeaJson{}
 	if err = json.Unmarshal(body, &keajson); err != nil {
-		log.Printf("Kea result is not parsed. Error is #%s ", err)
+		r.Log.V(1).Info("Kea result is not parsed. Error is #%s ", err)
 		return []Lease{}
 	}
 	return keajson[0].Arguments.Leases
@@ -423,18 +434,16 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 
 }
 
-func createNetCRD(mv dev1.NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
-	var expTime metav1.Time = metav1.Time{Time: time.Now().Add(time.Duration(conf.TTL) * time.Second)}
+func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
 	macLow := strings.ToLower(mv.MACAddress)
 	mv.MACAddress = macLow
-	mv.Expiration = expTime
 
 	crdname := strings.ReplaceAll(macLow, ":", "")
 	labels := make(map[string]string)
 	for idx := range mv.Addresses {
 		ipsubnet := &mv.Addresses[idx]
 		ips := ipsubnet.IPS
-		ipsubnet.IPType = dev1.IpVersion(ips[0])
+		ipsubnet.IPType = IpVersion(ips[0])
 		for jdx := range ips {
 			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "_")
 		}
@@ -509,26 +518,6 @@ func optStr(o ndp.Option) string {
 		return fmt.Sprintf("DNS search list: lifetime: %s, domain names: %s", o.Lifetime, strings.Join(o.DomainNames, ", "))
 	default:
 		return fmt.Sprintf("unrecognized option: %v", o)
-	}
-}
-
-func checkttl(r *NetdataReconciler, ctx context.Context, req ctrl.Request, now metav1.Time) {
-	var crds dev1.NetdataList
-	if err := r.List(ctx, &crds, client.InNamespace(req.Namespace)); err != nil {
-		r.Log.Error(err, "unable to list netdata crd")
-	}
-	for idx := range crds.Items {
-		k := &crds.Items[idx]
-		expirationTime := &k.Spec.Expiration
-		if expirationTime != nil {
-			if expirationTime.Before(&now) {
-				if err := r.Delete(ctx, k, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
-					r.Log.Error(err, "unable to delete expired netdata crd", "key", k)
-				} else {
-					r.Log.V(0).Info("deleted expired netdata crd", "key", k)
-				}
-			}
-		}
 	}
 }
 
@@ -638,19 +627,19 @@ func processNDPNA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan Netd
 	ch <- res
 }
 
-func newRes(subnet string, k *Lease) dev1.NetdataSpec {
+func newRes(subnet string, k *Lease) NetdataSpec {
 	return newNetdataSpec(k.HwAddress, k.IPAddress, k.Hostname, "ipv4")
 }
 
-func newNetdataSpec(mac string, ip string, hostname string, iptype string) dev1.NetdataSpec {
+func newNetdataSpec(mac string, ip string, hostname string, iptype string) NetdataSpec {
 	ips := []string{ip}
-	ipsubnet := dev1.IPsubnet{
+	ipsubnet := IPsubnet{
 		IPS:    ips,
 		Subnet: "deleteThisField",
 		IPType: iptype,
 	}
-	return dev1.NetdataSpec{
-		Addresses:  []dev1.IPsubnet{ipsubnet},
+	return NetdataSpec{
+		Addresses:  []IPsubnet{ipsubnet},
 		MACAddress: mac,
 		Hostname:   []string{hostname},
 	}
@@ -668,7 +657,7 @@ func unique(arr []string) []string {
 	return result
 }
 
-func (mergeRes NetdataMap) addIP2Res(k string, v dev1.NetdataSpec) {
+func (mergeRes NetdataMap) addIP2Res(k string, v NetdataSpec) {
 	newHostname := append(mergeRes[k].Hostname, v.Hostname...)
 	if thisMac, ok := mergeRes[k]; ok {
 		thisMac.Hostname = unique(newHostname)
@@ -785,6 +774,28 @@ func newICMPPacket6(id uint16, seq int) []byte {
 	return b
 }
 
+func localAddresses() {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
+		return
+	}
+	for _, i := range ifaces {
+		addrs, err := i.Addrs()
+		if err != nil {
+			fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
+			continue
+		}
+		for _, a := range addrs {
+			switch v := a.(type) {
+			case *net.IPAddr:
+				fmt.Printf("%v : %s (%s)\n", i.Name, v, v.IP.DefaultMask())
+			}
+
+		}
+	}
+}
+
 func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for ifidx := range c.Interface {
@@ -793,6 +804,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 		// Select a network interface by its name to use for NDP communications.
 		ifi, err := net.InterfaceByName(ndpif)
 		if err != nil {
+			localAddresses()
 			r.Log.Error(err, " .failed to get interface.")
 		}
 
@@ -862,6 +874,18 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 	}
 }
 
+func IpVersion(s string) string {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '.':
+			return "ipv4"
+		case ':':
+			return "ipv6"
+		}
+	}
+	return ""
+}
+
 func toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error) {
 	var nmapMac string
 	if len(host.Addresses) == 2 {
@@ -886,20 +910,20 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 		subnet := &c.Nmap[idx]
 		r.Log.Info("Nmap scan ", "subnet", *subnet)
 
-		if dev1.IpVersion(*subnet) == "ipv4" {
+		if IpVersion(*subnet) == "ipv4" {
 			res := nmapScan(*subnet, ctx)
 
 			for hostidx := range res {
 				host := &res[hostidx]
 				res, err := toNetdataMap(host, *subnet)
 				if err == nil {
-					r.Log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+					r.Log.V(1).Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
 					ch <- res
-					r.Log.Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+					r.Log.V(1).Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
 				}
 			}
 		} else {
-			r.Log.Info("Skip nmap scanning for ipv6", "subnet", *subnet)
+			r.Log.V(1).Info("Skip nmap scanning for ipv6", "subnet", *subnet)
 		}
 	}
 }
@@ -1026,11 +1050,8 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var c netdataconf
 	c.getConf()
 
-	// ttl
-	var now metav1.Time = metav1.Time{Time: time.Now()}
-	checkttl(r, ctx, req, now)
 	//	fmt.Printf("runtime.GOMAXPROC() = %+v \n", runtime.GOMAXPROC)
-	fmt.Printf("\nMergeRes is %+v \n", mergeRes)
+	r.Log.V(1).Info("\nMergeRes init state.", "mergeRes", mergeRes)
 	ch := make(chan NetdataMap, 1000)
 
 	wg := sync.WaitGroup{}
@@ -1054,17 +1075,17 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	wg.Wait()
-	fmt.Printf("\nWg ended \n")
+	r.Log.V(1).Info("\nWg ended \n")
 	close(ch)
-	fmt.Printf("\nch closed \n")
+	r.Log.V(1).Info("\nch closed \n")
 
 	for entity := range ch {
 		for k, v := range entity {
-			fmt.Printf("\ntest 1  mergeRes = %+v \n", mergeRes)
-			fmt.Printf("\ntest 1  k = %+v \n", k)
-			fmt.Printf("\ntest 1  v = %+v \n", v)
+			r.Log.V(1).Info("\ntest 1  mergeRes = %+v \n", mergeRes)
+			r.Log.V(1).Info("\ntest 1  k = %+v \n", k)
+			r.Log.V(1).Info("\ntest 1  v = %+v \n", v)
 			mergeRes.add2map(k, v)
-			fmt.Printf("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
+			r.Log.V(1).Info("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
 		}
 	}
 
@@ -1075,7 +1096,7 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-func (mergeRes NetdataMap) add2map(k string, v dev1.NetdataSpec) {
+func (mergeRes NetdataMap) add2map(k string, v NetdataSpec) {
 	indexArr := len(mergeRes[k].Addresses)
 	if indexArr == 0 {
 		mergeRes[k] = v

@@ -26,3 +26,6 @@ images:
   - name: netdata-ipam
     newName: core.harbor.onmetal.de/onmetal/netdata-ipam
     newTag: latest
+
+
+# TODO use current namespace if not defined
