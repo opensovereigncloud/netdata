@@ -924,8 +924,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 							r.Log.Error(err, " .failed to write neighbor solicitation.")
 						}
 
-						ll := log.New(os.Stderr, "ndp ns> ", 0)
-						if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
+						if err := receiveLoop(ctx, ndpconn, r, c, ch); err != nil {
 							r.Log.Error(err, " failed to read message:")
 						}
 					}
@@ -994,21 +993,21 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 	}
 }
 
-func receiveLoop(ctx context.Context, conn *ndp.Conn, ll *log.Logger, conf *netdataconf, ch chan NetdataMap) error {
+func receiveLoop(ctx context.Context, conn *ndp.Conn, r *NetdataReconciler, conf *netdataconf, ch chan NetdataMap) error {
 	var count int
 	for i := 0; i < 100; i++ {
-		ll.Printf("loop %d", i)
+		r.Log.V(1).Info("loop", "number", i)
 
 		msg, from, err := receive(ctx, conn, nil)
 		switch err {
 		case context.Canceled:
-			ll.Printf("received %d message(s)", count)
+			r.Log.V(1).Info("during whole cycle received", "messages", count)
 			return nil
 		case errRetry:
 			continue
 		case nil:
 			count++
-			printMessage(ll, msg, from, conf, ch)
+			printMessage(r, msg, from, conf, ch)
 		default:
 			return err
 		}
@@ -1047,24 +1046,24 @@ func receive(ctx context.Context, c *ndp.Conn, check func(m ndp.Message) bool) (
 	return nil, netip.Addr{}, fmt.Errorf("failed to read message: %v", err)
 }
 
-func printMessage(ll *log.Logger, m ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func printMessage(r *NetdataReconciler, m ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
 	switch m := m.(type) {
 	case *ndp.NeighborAdvertisement:
 		processNDPNA(m, from, c, ch)
-		printNA(ll, m, from)
+		printNA(r, m, from)
 	case *ndp.NeighborSolicitation:
 		processNDPNS(m, from, c, ch)
-		printNS(ll, m, from)
+		printNS(r, m, from)
 	case *ndp.RouterAdvertisement:
 		processNDPRA(m, from, c, ch)
 	case *ndp.RouterSolicitation:
 		processNDPRS(m, from, c, ch)
 	default:
-		ll.Printf("%s %#v", from, m)
+		r.Log.V(1).Info("%s %#v", from, m)
 	}
 }
 
-func printNA(ll *log.Logger, na *ndp.NeighborAdvertisement, from netip.Addr) {
+func printNA(r *NetdataReconciler, na *ndp.NeighborAdvertisement, from netip.Addr) {
 	s := fmt.Sprintf(
 		naFormat,
 		from.String(),
@@ -1074,17 +1073,17 @@ func printNA(ll *log.Logger, na *ndp.NeighborAdvertisement, from netip.Addr) {
 		na.TargetAddress.String(),
 	)
 
-	ll.Print(s + optionsString(na.Options))
+	r.Log.V(1).Info(fmt.Sprint(s + optionsString(na.Options)))
 }
 
-func printNS(ll *log.Logger, ns *ndp.NeighborSolicitation, from netip.Addr) {
+func printNS(r *NetdataReconciler, ns *ndp.NeighborSolicitation, from netip.Addr) {
 	s := fmt.Sprintf(
 		nsFormat,
 		from.String(),
 		ns.TargetAddress.String(),
 	)
 
-	ll.Print(s + optionsString(ns.Options))
+	r.Log.V(1).Info(fmt.Sprint(s + optionsString(ns.Options)))
 }
 
 func optionsString(options []ndp.Option) string {
