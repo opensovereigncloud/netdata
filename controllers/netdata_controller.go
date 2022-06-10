@@ -160,7 +160,6 @@ type netdataconf struct {
 	Interval    int               `yaml:"interval"`
 	TTL         int               `yaml:"ttl"`
 	KeaApi      []string          `yaml:"dhcp"`
-	Interface   string            `yaml:"doNotDefinendp"`
 	IPNamespace string            `default:"default" yaml:"ipnamespace"`
 	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
 }
@@ -176,7 +175,6 @@ func (c *netdataconf) getConf() *netdataconf {
 	if err != nil {
 		log.Fatalf("Unmarshal: %v", err)
 	}
-	c.getNDPInterface()
 	c.validate()
 	log.Printf("Config is #%v ", c)
 
@@ -207,32 +205,6 @@ func (c *netdataconf) getNMAPInterface() string {
 		}
 	}
 	return ""
-}
-
-func (c *netdataconf) getNDPInterface() {
-	if os.Getenv("NETSOURCE") == "ndp" {
-		subnetList := c.getSubnets()
-		ifaces, _ := net.Interfaces()
-		for _, i := range ifaces {
-			log.Printf("interface name %s", i.Name)
-			for _, subi := range subnetList.Items {
-				subnet := subi.Spec.CIDR.String()
-				if IpVersion(subnet) == "ipv4" {
-					// skiped network, require only ipv6
-				} else {
-					addrs, _ := i.Addrs()
-					for _, addri := range addrs {
-						_, ipnetSub, _ := net.ParseCIDR(subnet)
-						ipIf, _, _ := net.ParseCIDR(addri.String())
-						if ipnetSub.Contains(ipIf) {
-							c.Interface = i.Name
-							return
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 // get subnets by label
@@ -868,80 +840,98 @@ func newICMPPacket6(id uint16, seq int) []byte {
 
 func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
-	ndpif := c.Interface
-	r.Log.Info("Bind to interface ", ndpif, " for ndp")
-	// Select a network interface by its name to use for NDP communications.
-	ifi, err := net.InterfaceByName(ndpif)
-	if err != nil {
-		ifaces, err := net.Interfaces()
-		for _, i := range ifaces {
-			r.Log.Info("interface", "name", i.Name)
+	subnetList := c.getSubnets()
+	ifaces, _ := net.Interfaces()
+	for _, i := range ifaces {
+		for _, subi := range subnetList.Items {
+			subnet := subi.Spec.CIDR.String()
+			if IpVersion(subnet) == "ipv4" {
+				// skiped network, require only ipv6
+			} else {
+				addrs, _ := i.Addrs()
+				for _, addri := range addrs {
+					_, ipnetSub, _ := net.ParseCIDR(subnet)
+					ipIf, _, _ := net.ParseCIDR(addri.String())
+					if ipnetSub.Contains(ipIf) {
+						ndpif := i.Name
+						r.Log.Info("Bind to interface ", ndpif, " for ndp")
+						// Select a network interface by its name to use for NDP communications.
+						ifi, err := net.InterfaceByName(ndpif)
+						if err != nil {
+							ifaces, err := net.Interfaces()
+							for _, i := range ifaces {
+								r.Log.Info("interface", "name", i.Name)
+							}
+							r.Log.Error(err, " .failed to get interface.")
+						}
+
+						// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
+						ndpconn, ip, err := ndp.Listen(ifi, ndp.LinkLocal)
+						if err != nil {
+							r.Log.Error(err, ".failed to dial NDP connection.")
+							return
+						}
+						// Clean up after the connection is no longer needed.
+						defer ndpconn.Close()
+
+						r.Log.Info("ndp:", " bound to address:", ip)
+						// Choose a target with a known IPv6 link-local address.
+						target, err := netip.ParseAddr("fe80::")
+						if err != nil {
+							r.Log.Error(err, ".failed to parse ip fe80::.")
+							return
+						}
+
+						// Use target's solicited-node multicast address to request that the target
+						// respond with a neighbor advertisement.
+						snm, err := ndp.SolicitedNodeMulticast(target)
+						if err != nil {
+							r.Log.Error(err, " .failed to determine solicited-node multicast address.")
+						}
+
+						// Build a neighbor solicitation message, indicate the target's link-local
+						// address, and also specify our source link-layer address.
+						m := &ndp.NeighborSolicitation{
+							TargetAddress: target,
+							Options: []ndp.Option{
+								&ndp.LinkLayerAddress{
+									Direction: ndp.Source,
+									Addr:      ifi.HardwareAddr,
+								},
+							},
+						}
+
+						// send ping6 multicast
+						// ping -I mgmt0 -6 ff02::1
+						ff02Addr, _ := netip.ParseAddr("ff02::1")
+
+						var previousID int32
+						pingid := uint16(atomic.AddInt32(&previousID, 1) & 0xffff)
+						for seq := 0; seq < 3; seq++ {
+
+							b := newICMPPacket6(pingid, seq)
+
+							err := ndpconn.WriteRaw(b, nil, ff02Addr)
+							if err != nil {
+								r.Log.Error(err, " .failed to sent ping ff02::1 address.")
+							}
+							fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
+							time.Sleep(1 * time.Second)
+						}
+
+						// Send the multicast message and wait for a response.
+						if err := ndpconn.WriteTo(m, nil, snm); err != nil {
+							r.Log.Error(err, " .failed to write neighbor solicitation.")
+						}
+
+						ll := log.New(os.Stderr, "ndp ns> ", 0)
+						if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
+							r.Log.Error(err, " failed to read message:")
+						}
+					}
+				}
+			}
 		}
-		r.Log.Error(err, " .failed to get interface.")
-	}
-
-	// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
-	ndpconn, ip, err := ndp.Listen(ifi, ndp.LinkLocal)
-	if err != nil {
-		r.Log.Error(err, ".failed to dial NDP connection.")
-		return
-	}
-	// Clean up after the connection is no longer needed.
-	defer ndpconn.Close()
-
-	r.Log.Info("ndp:", " bound to address:", ip)
-	// Choose a target with a known IPv6 link-local address.
-	target, err := netip.ParseAddr("fe80::")
-	if err != nil {
-		r.Log.Error(err, ".failed to parse ip fe80::.")
-		return
-	}
-
-	// Use target's solicited-node multicast address to request that the target
-	// respond with a neighbor advertisement.
-	snm, err := ndp.SolicitedNodeMulticast(target)
-	if err != nil {
-		r.Log.Error(err, " .failed to determine solicited-node multicast address.")
-	}
-
-	// Build a neighbor solicitation message, indicate the target's link-local
-	// address, and also specify our source link-layer address.
-	m := &ndp.NeighborSolicitation{
-		TargetAddress: target,
-		Options: []ndp.Option{
-			&ndp.LinkLayerAddress{
-				Direction: ndp.Source,
-				Addr:      ifi.HardwareAddr,
-			},
-		},
-	}
-
-	// send ping6 multicast
-	// ping -I mgmt0 -6 ff02::1
-	ff02Addr, _ := netip.ParseAddr("ff02::1")
-
-	var previousID int32
-	pingid := uint16(atomic.AddInt32(&previousID, 1) & 0xffff)
-	for seq := 0; seq < 3; seq++ {
-
-		b := newICMPPacket6(pingid, seq)
-
-		err := ndpconn.WriteRaw(b, nil, ff02Addr)
-		if err != nil {
-			r.Log.Error(err, " .failed to sent ping ff02::1 address.")
-		}
-		fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
-		time.Sleep(1 * time.Second)
-	}
-
-	// Send the multicast message and wait for a response.
-	if err := ndpconn.WriteTo(m, nil, snm); err != nil {
-		r.Log.Error(err, " .failed to write neighbor solicitation.")
-	}
-
-	ll := log.New(os.Stderr, "ndp ns> ", 0)
-	if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
-		r.Log.Error(err, " failed to read message:")
 	}
 }
 
