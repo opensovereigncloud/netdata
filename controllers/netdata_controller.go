@@ -406,12 +406,9 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	var notDeleteIPS []v1alpha1.IP
 	var updateLabelsIPS []v1alpha1.IP
 
-	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n1 deleteIPS %v", deleteIPS)
 	deleteIPS, notDeleteIPS, updateLabelsIPS = checkDuplicateMac(ctx, ip, client, deleteIPS, notDeleteIPS, updateLabelsIPS)
-	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n2 deleteIPS %v", deleteIPS)
 	// remove ip duplication
 	deleteIPS = checkDuplicateIP(ctx, ip, client, deleteIPS)
-	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n3 deleteIPS %v", deleteIPS)
 
 	// delete objects
 	for delindex := range deleteIPS {
