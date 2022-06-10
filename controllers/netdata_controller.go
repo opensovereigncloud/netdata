@@ -51,6 +51,7 @@ import (
 
 	"github.com/onmetal/ipam/api/v1alpha1"
 	"github.com/onmetal/ipam/clientset"
+	clienta1 "github.com/onmetal/ipam/clientset/v1alpha1"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv6"
@@ -156,13 +157,12 @@ func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 }
 
 type netdataconf struct {
-	Nmap        []string          `yaml:"nmap"`
 	Interval    int               `yaml:"interval"`
 	TTL         int               `yaml:"ttl"`
 	KeaApi      []string          `yaml:"dhcp"`
-	Interface   []string          `yaml:"ndp"`
+	Interface   string            `yaml:"doNotDefinendp"`
 	IPNamespace string            `default:"default" yaml:"ipnamespace"`
-	SubnetLabel map[string]string `yaml:"subnetlabel"`
+	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
 }
 
 func (c *netdataconf) getConf() *netdataconf {
@@ -176,10 +176,79 @@ func (c *netdataconf) getConf() *netdataconf {
 	if err != nil {
 		log.Fatalf("Unmarshal: %v", err)
 	}
-	log.Printf("Config is #%v ", c)
+	c.getNDPInterface()
 	c.validate()
+	log.Printf("Config is #%v ", c)
 
 	return c
+}
+
+func (c *netdataconf) getNMAPInterface() string {
+	if os.Getenv("NETSOURCE") == "nmap" {
+		subnetList := c.getSubnets()
+		ifaces, _ := net.Interfaces()
+		for _, i := range ifaces {
+			log.Printf("interface name %s", i.Name)
+			for _, subi := range subnetList.Items {
+				subnet := subi.Spec.CIDR.String()
+				if IpVersion(subnet) == "ipv4" {
+					addrs, _ := i.Addrs()
+					for _, addri := range addrs {
+						_, ipnetSub, _ := net.ParseCIDR(subnet)
+						ipIf, _, _ := net.ParseCIDR(addri.String())
+						if ipnetSub.Contains(ipIf) {
+							return i.Name
+						}
+					}
+				} else {
+					// skiped network, require only ipv4
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (c *netdataconf) getNDPInterface() {
+	if os.Getenv("NETSOURCE") == "ndp" {
+		subnetList := c.getSubnets()
+		ifaces, _ := net.Interfaces()
+		for _, i := range ifaces {
+			log.Printf("interface name %s", i.Name)
+			for _, subi := range subnetList.Items {
+				subnet := subi.Spec.CIDR.String()
+				if IpVersion(subnet) == "ipv4" {
+					// skiped network, require only ipv6
+				} else {
+					addrs, _ := i.Addrs()
+					for _, addri := range addrs {
+						_, ipnetSub, _ := net.ParseCIDR(subnet)
+						ipIf, _, _ := net.ParseCIDR(addri.String())
+						if ipnetSub.Contains(ipIf) {
+							c.Interface = i.Name
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// get subnets by label
+func (c *netdataconf) getSubnets() *v1alpha1.SubnetList {
+	kubeconfig := kubeconfigCreate()
+
+	cs, _ := clientset.NewForConfig(kubeconfig)
+	clientSubnet := cs.IpamV1Alpha1().Subnets(c.IPNamespace)
+	labelSelector := metav1.LabelSelector{MatchLabels: c.SubnetLabel}
+
+	subnetListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
+		Limit:         100,
+	}
+	subnetList, _ := clientSubnet.List(context.Background(), subnetListOptions)
+	return subnetList
 }
 
 func (c *netdataconf) validate() {
@@ -303,17 +372,9 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	kubeconfig := kubeconfigCreate()
 
 	cs, _ := clientset.NewForConfig(kubeconfig)
-	clientSubnet := cs.IpamV1Alpha1().Subnets(c.IPNamespace)
 	client := cs.IpamV1Alpha1().IPs(c.IPNamespace)
 
-	// get subnets by label
-	labelSelector := metav1.LabelSelector{MatchLabels: c.SubnetLabel}
-
-	subnetListOptions := metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
-		Limit:         100,
-	}
-	subnetList, _ := clientSubnet.List(context.Background(), subnetListOptions)
+	subnetList := c.getSubnets()
 	// select subnet by ip and ip mask
 	var subnet v1alpha1.Subnet
 	for _, k := range subnetList.Items {
@@ -340,53 +401,23 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	}
 	ip.Spec.Subnet.Name = subnet.ObjectMeta.Name
 
-	// if (do we have object with different IP address and same origin)
-	//    ->  delete object
-	labelsIPS := make(map[string]string)
-	labelsIPS["mac"] = strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
-
-	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
-	ipsListOptions := metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
-		Limit:         100,
-	}
-	ipsList, _ := client.List(ctx, ipsListOptions)
-
 	// list of ip for delete
 	var deleteIPS []v1alpha1.IP
 	var notDeleteIPS []v1alpha1.IP
 	var updateLabelsIPS []v1alpha1.IP
-	for ipindex := range ipsList.Items {
-		existedIP := ipsList.Items[ipindex]
-		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
-			notDeleteIPS = append(notDeleteIPS, existedIP)
-			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-				log.Printf("labels for current %s  existed Labels:  %+v \n\n", existedIP.ObjectMeta.Name, existedIP.ObjectMeta.Labels)
-			} else {
-				// update- add label origin-os.Getenv("NETSOURCE")
-				if existedIP.ObjectMeta.Labels["origin"] != "kea" {
-					log.Printf("add to update labels to current origin %+v \n\n", existedIP.ObjectMeta.Name)
-					updateLabelsIPS = append(updateLabelsIPS, existedIP)
-				}
-			}
-		} else {
-			log.Printf("existedIP.Spec.IP != ip.Spec.IP\n  %+v != %+v \n\n", existedIP.Spec.IP, ip.Spec.IP)
-			// ndp do not mix with nmap and kea
-			if existedIP.Spec.IP.Net.Is6() == ip.Spec.IP.Net.Is6() {
-				// mac and origin are same, but ip is different - delete
-				if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-					log.Printf("add to delete list %+v \n\n", existedIP.ObjectMeta.Name)
-					deleteIPS = append(deleteIPS, existedIP)
-				}
-			}
-		}
-	}
+
+	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n1 deleteIPS %v", deleteIPS)
+	deleteIPS, notDeleteIPS, updateLabelsIPS = checkDuplicateMac(ctx, ip, client, deleteIPS, notDeleteIPS, updateLabelsIPS)
+	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n2 deleteIPS %v", deleteIPS)
+	// remove ip duplication
+	deleteIPS = checkDuplicateIP(ctx, ip, client, deleteIPS)
+	log.Printf("\n\n!!!!!!!!!!!!!!!!!!!!!!\n3 deleteIPS %v", deleteIPS)
 
 	// delete objects
 	for delindex := range deleteIPS {
 		existedIP := deleteIPS[delindex]
 		if contains(notDeleteIPS, existedIP) {
-			log.Printf("not deleted  %+s because in not delete array \n\n", existedIP.ObjectMeta.Name)
+			log.Printf("not deleted  %+s because it is in not_delete_array \n\n", existedIP.ObjectMeta.Name)
 		} else {
 			err := client.Delete(ctx, existedIP.ObjectMeta.Name, v1.DeleteOptions{})
 			if err != nil {
@@ -432,6 +463,70 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 		}
 	}
 
+}
+
+func checkDuplicateMac(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, deleteIPS []v1alpha1.IP, notDeleteIPS []v1alpha1.IP, updateLabelsIPS []v1alpha1.IP) ([]v1alpha1.IP, []v1alpha1.IP, []v1alpha1.IP) {
+	// if (do we have object with different IP address and same origin)
+	//    ->  delete object
+	labelsIPS := make(map[string]string)
+	labelsIPS["mac"] = strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
+
+	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
+	ipsListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
+		Limit:         100,
+	}
+	ipsList, _ := client.List(ctx, ipsListOptions)
+	for ipindex := range ipsList.Items {
+		existedIP := ipsList.Items[ipindex]
+		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
+			notDeleteIPS = append(notDeleteIPS, existedIP)
+			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
+				log.Printf("labels for current %s  existed Labels:  %+v \n\n", existedIP.ObjectMeta.Name, existedIP.ObjectMeta.Labels)
+			} else {
+				// update- add label origin-os.Getenv("NETSOURCE")
+				if existedIP.ObjectMeta.Labels["origin"] != "kea" {
+					log.Printf("add to update labels to current origin %+v \n\n", existedIP.ObjectMeta.Name)
+					updateLabelsIPS = append(updateLabelsIPS, existedIP)
+				}
+			}
+		} else {
+			log.Printf("existedIP.Spec.IP != ip.Spec.IP\n  %+v != %+v \n\n", existedIP.Spec.IP, ip.Spec.IP)
+			// ndp do not mix with nmap and kea
+			if existedIP.Spec.IP.Net.Is6() == ip.Spec.IP.Net.Is6() {
+				// mac and origin are same, but ip is different - delete
+				if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
+					log.Printf("add to delete list %+v \n\n", existedIP.ObjectMeta.Name)
+					deleteIPS = append(deleteIPS, existedIP)
+				}
+			}
+		}
+	}
+	return deleteIPS, notDeleteIPS, updateLabelsIPS
+}
+
+func checkDuplicateIP(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, deleteIPS []v1alpha1.IP) []v1alpha1.IP {
+	labelsIPS := make(map[string]string)
+	labelsIPS["ip"] = ip.Spec.IP.String()
+
+	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
+	ipsListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
+		Limit:         100,
+	}
+	ipsList, _ := client.List(ctx, ipsListOptions)
+	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
+	for ipindex := range ipsList.Items {
+		existedIP := ipsList.Items[ipindex]
+		if existedIP.Spec.IP.Equal(ip.Spec.IP) && existedIP.ObjectMeta.Labels["mac"] != mac {
+
+			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
+				log.Printf("found ipam ip object with same ip %v and diferent mac %v . DELETE", ip.Spec.IP, mac)
+				deleteIPS = append(deleteIPS, existedIP)
+			}
+		}
+	}
+	return deleteIPS
 }
 
 func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
@@ -776,82 +871,80 @@ func newICMPPacket6(id uint16, seq int) []byte {
 
 func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for ifidx := range c.Interface {
-		ndpif := c.Interface[ifidx]
-		r.Log.Info("Bind to interface ", ndpif, " for ndp")
-		// Select a network interface by its name to use for NDP communications.
-		ifi, err := net.InterfaceByName(ndpif)
-		if err != nil {
-			ifaces, err := net.Interfaces()
-			for _, i := range ifaces {
-				r.Log.Info("interface", "name", i.Name)
-			}
-			r.Log.Error(err, " .failed to get interface.")
+	ndpif := c.Interface
+	r.Log.Info("Bind to interface ", ndpif, " for ndp")
+	// Select a network interface by its name to use for NDP communications.
+	ifi, err := net.InterfaceByName(ndpif)
+	if err != nil {
+		ifaces, err := net.Interfaces()
+		for _, i := range ifaces {
+			r.Log.Info("interface", "name", i.Name)
 		}
+		r.Log.Error(err, " .failed to get interface.")
+	}
 
-		// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
-		ndpconn, ip, err := ndp.Listen(ifi, ndp.LinkLocal)
-		if err != nil {
-			r.Log.Error(err, ".failed to dial NDP connection.")
-			return
-		}
-		// Clean up after the connection is no longer needed.
-		defer ndpconn.Close()
+	// Set up an *ndp.Conn, bound to this interface's link-local IPv6 address.
+	ndpconn, ip, err := ndp.Listen(ifi, ndp.LinkLocal)
+	if err != nil {
+		r.Log.Error(err, ".failed to dial NDP connection.")
+		return
+	}
+	// Clean up after the connection is no longer needed.
+	defer ndpconn.Close()
 
-		r.Log.Info("ndp:", " bound to address:", ip)
-		// Choose a target with a known IPv6 link-local address.
-		target, err := netip.ParseAddr("fe80::")
-		if err != nil {
-			r.Log.Error(err, ".failed to parse ip fe80::.")
-			return
-		}
+	r.Log.Info("ndp:", " bound to address:", ip)
+	// Choose a target with a known IPv6 link-local address.
+	target, err := netip.ParseAddr("fe80::")
+	if err != nil {
+		r.Log.Error(err, ".failed to parse ip fe80::.")
+		return
+	}
 
-		// Use target's solicited-node multicast address to request that the target
-		// respond with a neighbor advertisement.
-		snm, err := ndp.SolicitedNodeMulticast(target)
-		if err != nil {
-			r.Log.Error(err, " .failed to determine solicited-node multicast address.")
-		}
+	// Use target's solicited-node multicast address to request that the target
+	// respond with a neighbor advertisement.
+	snm, err := ndp.SolicitedNodeMulticast(target)
+	if err != nil {
+		r.Log.Error(err, " .failed to determine solicited-node multicast address.")
+	}
 
-		// Build a neighbor solicitation message, indicate the target's link-local
-		// address, and also specify our source link-layer address.
-		m := &ndp.NeighborSolicitation{
-			TargetAddress: target,
-			Options: []ndp.Option{
-				&ndp.LinkLayerAddress{
-					Direction: ndp.Source,
-					Addr:      ifi.HardwareAddr,
-				},
+	// Build a neighbor solicitation message, indicate the target's link-local
+	// address, and also specify our source link-layer address.
+	m := &ndp.NeighborSolicitation{
+		TargetAddress: target,
+		Options: []ndp.Option{
+			&ndp.LinkLayerAddress{
+				Direction: ndp.Source,
+				Addr:      ifi.HardwareAddr,
 			},
+		},
+	}
+
+	// send ping6 multicast
+	// ping -I mgmt0 -6 ff02::1
+	ff02Addr, _ := netip.ParseAddr("ff02::1")
+
+	var previousID int32
+	pingid := uint16(atomic.AddInt32(&previousID, 1) & 0xffff)
+	for seq := 0; seq < 3; seq++ {
+
+		b := newICMPPacket6(pingid, seq)
+
+		err := ndpconn.WriteRaw(b, nil, ff02Addr)
+		if err != nil {
+			r.Log.Error(err, " .failed to sent ping ff02::1 address.")
 		}
+		fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
+		time.Sleep(1 * time.Second)
+	}
 
-		// send ping6 multicast
-		// ping -I mgmt0 -6 ff02::1
-		ff02Addr, _ := netip.ParseAddr("ff02::1")
+	// Send the multicast message and wait for a response.
+	if err := ndpconn.WriteTo(m, nil, snm); err != nil {
+		r.Log.Error(err, " .failed to write neighbor solicitation.")
+	}
 
-		var previousID int32
-		pingid := uint16(atomic.AddInt32(&previousID, 1) & 0xffff)
-		for seq := 0; seq < 3; seq++ {
-
-			b := newICMPPacket6(pingid, seq)
-
-			err := ndpconn.WriteRaw(b, nil, ff02Addr)
-			if err != nil {
-				r.Log.Error(err, " .failed to sent ping ff02::1 address.")
-			}
-			fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
-			time.Sleep(1 * time.Second)
-		}
-
-		// Send the multicast message and wait for a response.
-		if err := ndpconn.WriteTo(m, nil, snm); err != nil {
-			r.Log.Error(err, " .failed to write neighbor solicitation.")
-		}
-
-		ll := log.New(os.Stderr, "ndp ns> ", 0)
-		if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
-			r.Log.Error(err, " failed to read message:")
-		}
+	ll := log.New(os.Stderr, "ndp ns> ", 0)
+	if err := receiveLoop(ctx, ndpconn, ll, c, ch); err != nil {
+		r.Log.Error(err, " failed to read message:")
 	}
 }
 
@@ -887,24 +980,29 @@ func toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error) {
 
 func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for idx := range c.Nmap {
-		subnet := &c.Nmap[idx]
-		r.Log.V(1).Info("Nmap scan ", "subnet", *subnet)
+	subnetList := c.getSubnets()
+	for _, subi := range subnetList.Items {
+		// check if at least 1 interface belong to subnet
+		if len(c.getNMAPInterface()) > 0 {
 
-		if IpVersion(*subnet) == "ipv4" {
-			res := nmapScan(*subnet, ctx)
+			subnet := subi.Spec.CIDR.String()
+			r.Log.V(1).Info("Nmap scan ", "subnet", subnet)
 
-			for hostidx := range res {
-				host := &res[hostidx]
-				res, err := toNetdataMap(host, *subnet)
-				if err == nil {
-					r.Log.V(1).Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
-					ch <- res
-					r.Log.V(1).Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+			if IpVersion(subnet) == "ipv4" {
+				res := nmapScan(subnet, ctx)
+
+				for hostidx := range res {
+					host := &res[hostidx]
+					res, err := toNetdataMap(host, subnet)
+					if err == nil {
+						r.Log.V(1).Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+						ch <- res
+						r.Log.V(1).Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+					}
 				}
+			} else {
+				r.Log.V(1).Info("Skip nmap scanning for ipv6", "subnet", subnet)
 			}
-		} else {
-			r.Log.V(1).Info("Skip nmap scanning for ipv6", "subnet", *subnet)
 		}
 	}
 }
