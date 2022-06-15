@@ -36,6 +36,7 @@ import (
 
 	"github.com/go-logr/logr"
 	ndp "github.com/mdlayher/ndp"
+	"github.com/mdlayher/netx/eui64"
 	yaml "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -346,6 +347,7 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	client := cs.IpamV1Alpha1().IPs(c.IPNamespace)
 
+	// TODO cache result and speedup
 	subnetList := c.getSubnets()
 	// select subnet by ip and ip mask
 	var subnet v1alpha1.Subnet
@@ -585,7 +587,7 @@ func optStr(o ndp.Option) string {
 	}
 }
 
-func processNDPNS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func (r *NetdataReconciler) processNDPNS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap, subnet net.IP) {
 	// Expect a neighbor advertisement message with a target link-layer
 	// address option.
 
@@ -604,14 +606,16 @@ func processNDPNS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan Netd
 		return
 	}
 
-	fmt.Printf("ndp: neighbor solicitation from %s:\n", from)
-	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+	r.Log.V(1).Info("ndp: neighbor solicitation", "from", from)
+	r.Log.V(1).Info("  -", " link-layer address:", tll.Addr)
+	pubAddr := ipv6Local2Pub(subnet, from.String())
+	r.Log.V(1).Info("  -", " public address: ", pubAddr)
 
 	res := make(NetdataMap)
-	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), pubAddr, "", "ipv6")
 	ch <- res
 }
-func processNDPRS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func (r *NetdataReconciler) processNDPRS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap, subnet net.IP) {
 	// Expect a route solicitation message with a target link-layer
 	// address option.
 
@@ -630,14 +634,16 @@ func processNDPRS(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan Netd
 		return
 	}
 
-	fmt.Printf("ndp: router solicitation from %s:\n", from)
-	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+	r.Log.V(1).Info("ndp: router solicitation", "from", from)
+	r.Log.V(1).Info("  -", " link-layer address:", tll.Addr)
+	pubAddr := ipv6Local2Pub(subnet, from.String())
+	r.Log.V(1).Info("  -", " public address: ", pubAddr)
 
 	res := make(NetdataMap)
-	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), pubAddr, "", "ipv6")
 	ch <- res
 }
-func processNDPRA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func (r *NetdataReconciler) processNDPRA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap, subnet net.IP) {
 	// Expect a router advertisement message with a target link-layer
 	// address option.
 
@@ -656,14 +662,16 @@ func processNDPRA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan Netd
 		return
 	}
 
-	fmt.Printf("ndp: router advertisement from %s:\n", from)
-	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+	r.Log.V(1).Info("ndp: router advertisement ", "from", from)
+	r.Log.V(1).Info("  -", " link-layer address:", tll.Addr)
+	pubAddr := ipv6Local2Pub(subnet, from.String())
+	r.Log.V(1).Info("  -", " public address: ", pubAddr)
 
 	res := make(NetdataMap)
-	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), pubAddr, "", "ipv6")
 	ch <- res
 }
-func processNDPNA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func (r *NetdataReconciler) processNDPNA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap, subnet net.IP) {
 	// Expect a neighbor advertisement message with a target link-layer
 	// address option.
 
@@ -682,13 +690,22 @@ func processNDPNA(msg ndp.Message, from netip.Addr, c *netdataconf, ch chan Netd
 		return
 	}
 
-	fmt.Printf("ndp: neighbor advertisement from %s:\n", from)
-	fmt.Printf("  - solicited: %t\n", na.Solicited)
-	fmt.Printf("  - link-layer address: %s\n", tll.Addr)
+	r.Log.V(1).Info("ndp: neighbor advertisement", "from", from)
+	r.Log.V(1).Info("  -", " solicited:", na.Solicited)
+	r.Log.V(1).Info("  -", " link-layer address:", tll.Addr)
+	pubAddr := ipv6Local2Pub(subnet, from.String())
+	r.Log.V(1).Info("  -", " public address: ", pubAddr)
 
 	res := make(NetdataMap)
-	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), strings.Split(from.String(), "%")[0], "", "ipv6")
+	res[tll.Addr.String()] = newNetdataSpec(tll.Addr.String(), pubAddr, "", "ipv6")
 	ch <- res
+}
+
+func ipv6Local2Pub(subnet net.IP, localip string) string {
+	iploc := net.ParseIP(strings.Split(localip, "%")[0])
+	_, hw, _ := eui64.ParseIP(iploc)
+	pubip, _ := eui64.ParseMAC(subnet, hw)
+	return pubip.String()
 }
 
 func newRes(subnet string, k *Lease) NetdataSpec {
@@ -854,13 +871,13 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 					ipIf, _, _ := net.ParseCIDR(addri.String())
 					if ipnetSub.Contains(ipIf) {
 						ndpif := i.Name
-						r.Log.Info("Bind to interface ", ndpif, " for ndp")
+						r.Log.V(1).Info("Bind to interface ", ndpif, " for ndp")
 						// Select a network interface by its name to use for NDP communications.
 						ifi, err := net.InterfaceByName(ndpif)
 						if err != nil {
 							ifaces, err := net.Interfaces()
 							for _, i := range ifaces {
-								r.Log.Info("interface", "name", i.Name)
+								r.Log.V(1).Info("interface", "name", i.Name)
 							}
 							r.Log.Error(err, " .failed to get interface.")
 						}
@@ -874,7 +891,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 						// Clean up after the connection is no longer needed.
 						defer ndpconn.Close()
 
-						r.Log.Info("ndp:", " bound to address:", ip)
+						r.Log.V(1).Info("ndp:", " bound to address:", ip)
 						// Choose a target with a known IPv6 link-local address.
 						target, err := netip.ParseAddr("fe80::")
 						if err != nil {
@@ -915,7 +932,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 							if err != nil {
 								r.Log.Error(err, " .failed to sent ping ff02::1 address.")
 							}
-							fmt.Printf("ping to address ff02::1 , seq = %d\n", seq)
+							r.Log.V(1).Info("ping to address ff02::1 ", "seq", seq)
 							time.Sleep(1 * time.Second)
 						}
 
@@ -924,7 +941,7 @@ func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch ch
 							r.Log.Error(err, " .failed to write neighbor solicitation.")
 						}
 
-						if err := receiveLoop(ctx, ndpconn, r, c, ch); err != nil {
+						if err := r.receiveLoop(ctx, ipnetSub.IP, ndpconn, c, ch); err != nil {
 							r.Log.Error(err, " failed to read message:")
 						}
 					}
@@ -993,7 +1010,7 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 	}
 }
 
-func receiveLoop(ctx context.Context, conn *ndp.Conn, r *NetdataReconciler, conf *netdataconf, ch chan NetdataMap) error {
+func (r *NetdataReconciler) receiveLoop(ctx context.Context, subnet net.IP, conn *ndp.Conn, conf *netdataconf, ch chan NetdataMap) error {
 	var count int
 	for i := 0; i < 100; i++ {
 		r.Log.V(1).Info("loop", "number", i)
@@ -1007,7 +1024,7 @@ func receiveLoop(ctx context.Context, conn *ndp.Conn, r *NetdataReconciler, conf
 			continue
 		case nil:
 			count++
-			printMessage(r, msg, from, conf, ch)
+			r.printMessage(msg, from, conf, ch, subnet)
 		default:
 			return err
 		}
@@ -1046,18 +1063,18 @@ func receive(ctx context.Context, c *ndp.Conn, check func(m ndp.Message) bool) (
 	return nil, netip.Addr{}, fmt.Errorf("failed to read message: %v", err)
 }
 
-func printMessage(r *NetdataReconciler, m ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap) {
+func (r *NetdataReconciler) printMessage(m ndp.Message, from netip.Addr, c *netdataconf, ch chan NetdataMap, subnet net.IP) {
 	switch m := m.(type) {
 	case *ndp.NeighborAdvertisement:
-		processNDPNA(m, from, c, ch)
+		r.processNDPNA(m, from, c, ch, subnet)
 		printNA(r, m, from)
 	case *ndp.NeighborSolicitation:
-		processNDPNS(m, from, c, ch)
+		r.processNDPNS(m, from, c, ch, subnet)
 		printNS(r, m, from)
 	case *ndp.RouterAdvertisement:
-		processNDPRA(m, from, c, ch)
+		r.processNDPRA(m, from, c, ch, subnet)
 	case *ndp.RouterSolicitation:
-		processNDPRS(m, from, c, ch)
+		r.processNDPRS(m, from, c, ch, subnet)
 	default:
 		r.Log.V(1).Info("%s %#v", from, m)
 	}
