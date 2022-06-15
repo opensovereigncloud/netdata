@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -500,6 +501,19 @@ func checkDuplicateIP(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInt
 	return deleteIPS
 }
 
+func FullIPv6(ip net.IP) string {
+	dst := make([]byte, hex.EncodedLen(len(ip)))
+	_ = hex.Encode(dst, ip)
+	return string(dst[0:4]) + ":" +
+		string(dst[4:8]) + ":" +
+		string(dst[8:12]) + ":" +
+		string(dst[12:16]) + ":" +
+		string(dst[16:20]) + ":" +
+		string(dst[20:24]) + ":" +
+		string(dst[24:28]) + ":" +
+		string(dst[28:])
+}
+
 func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
 	macLow := strings.ToLower(mv.MACAddress)
 	mv.MACAddress = macLow
@@ -705,7 +719,7 @@ func ipv6Local2Pub(subnet net.IP, localip string) string {
 	iploc := net.ParseIP(strings.Split(localip, "%")[0])
 	_, hw, _ := eui64.ParseIP(iploc)
 	pubip, _ := eui64.ParseMAC(subnet, hw)
-	return pubip.String()
+	return FullIPv6(pubip)
 }
 
 func newRes(subnet string, k *Lease) NetdataSpec {
