@@ -149,7 +149,7 @@ func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
 		r.Log.Error(err, "Fail read kea api answer")
 	}
 
-	r.Log.V(1).Info("Kea result is #%s ", body)
+	r.Log.V(1).Info("Kea result is", "body", body)
 	keajson := KeaJson{}
 	if err = json.Unmarshal(body, &keajson); err != nil {
 		r.Log.V(1).Info("Kea result is not parsed. Error is #%s ", err)
