@@ -209,12 +209,12 @@ func (c *netdataconf) getNMAPInterface() string {
 	return ""
 }
 
-// get subnets by label
+// get subnets by label clusterwide
 func (c *netdataconf) getSubnets() *v1alpha1.SubnetList {
 	kubeconfig := kubeconfigCreate()
 
 	cs, _ := clientset.NewForConfig(kubeconfig)
-	clientSubnet := cs.IpamV1Alpha1().Subnets(c.IPNamespace)
+	clientSubnet := cs.IpamV1Alpha1().Subnets(metav1.NamespaceAll)
 	labelSelector := metav1.LabelSelector{MatchLabels: c.SubnetLabel}
 
 	subnetListOptions := metav1.ListOptions{
@@ -346,7 +346,6 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	kubeconfig := kubeconfigCreate()
 
 	cs, _ := clientset.NewForConfig(kubeconfig)
-	client := cs.IpamV1Alpha1().IPs(c.IPNamespace)
 
 	// TODO cache result and speedup
 	subnetList := c.getSubnets()
@@ -375,12 +374,14 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 		return
 	}
 	ip.Spec.Subnet.Name = subnet.ObjectMeta.Name
+	ip.ObjectMeta.Namespace = subnet.ObjectMeta.Namespace
 
 	// list of ip for delete
 	var deleteIPS []v1alpha1.IP
 	var notDeleteIPS []v1alpha1.IP
 	var updateLabelsIPS []v1alpha1.IP
 
+	client := cs.IpamV1Alpha1().IPs(subnet.ObjectMeta.Namespace)
 	deleteIPS, notDeleteIPS, updateLabelsIPS = checkDuplicateMac(ctx, ip, client, deleteIPS, notDeleteIPS, updateLabelsIPS)
 	// remove ip duplication
 	deleteIPS = checkDuplicateIP(ctx, ip, client, deleteIPS)
@@ -869,6 +870,56 @@ func newICMPPacket6(id uint16, seq int) []byte {
 	return b
 }
 
+func cleanupIps(ctx context.Context, c *netdataconf, origin string) {
+	subnetList := c.getSubnets()
+	ips := getIps(origin)
+
+	for idx := range ips {
+		var deleteFlag bool
+		deleteFlag = true
+		ip := &ips[idx]
+		// check subnet existens with proper labels
+		for subnetx := range subnetList.Items {
+			sub := &subnetList.Items[subnetx]
+			if ip.Spec.Subnet.Name == sub.ObjectMeta.Name {
+				deleteFlag = false
+				break
+			}
+		}
+		// check time of creation
+		if deleteFlag {
+			deleteIP(ctx, ip)
+		}
+	}
+}
+
+func deleteIP(ctx context.Context, ip *v1alpha1.IP) {
+	kubeconfig := kubeconfigCreate()
+	cs, _ := clientset.NewForConfig(kubeconfig)
+	client := cs.IpamV1Alpha1().IPs(ip.ObjectMeta.Namespace)
+	err := client.Delete(ctx, ip.ObjectMeta.Name, v1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("deleteIP ERROR!!  %+v error +%v \n\n", ip, err.Error())
+	} else {
+		fmt.Printf("deleted IP  %s \n", ip.ObjectMeta.Name)
+	}
+}
+
+func getIps(origin string) []v1alpha1.IP {
+	kubeconfig := kubeconfigCreate()
+	cs, _ := clientset.NewForConfig(kubeconfig)
+	clientip := cs.IpamV1Alpha1().IPs(metav1.NamespaceAll)
+
+	labelsorigin := map[string]string{"origin": origin}
+	labelSelector := metav1.LabelSelector{MatchLabels: labelsorigin}
+	labelListOptions := metav1.ListOptions{
+		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
+		Limit:         1000,
+	}
+	ipList, _ := clientip.List(context.Background(), labelListOptions)
+	return ipList.Items
+}
+
 func ndpProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
 	defer wg.Done()
 	subnetList := c.getSubnets()
@@ -1136,8 +1187,8 @@ func writef(sw io.StringWriter, format string, a ...interface{}) {
 	_, _ = sw.WriteString(fmt.Sprintf(format, a...))
 }
 
-// +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=machine.onmetal.de,resources=netdata/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet/status,verbs=get
 func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.Log.WithValues("netdata", req.NamespacedName)
 	mergeRes := make(NetdataMap)
@@ -1154,14 +1205,17 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	netSource := os.Getenv("NETSOURCE")
 	switch netSource {
 	case "kea":
+		cleanupIps(ctx, &c, netSource)
 		wg.Add(1)
 		go kealeaseProcess(&c, r, ch, &wg)
 		fmt.Printf("\nStarted kea \n")
 	case "ndp":
+		cleanupIps(ctx, &c, netSource)
 		wg.Add(1)
 		go ndpProcess(&c, r, ctx, ch, &wg)
 		fmt.Printf("\nStarted ndp \n")
 	case "nmap":
+		cleanupIps(ctx, &c, netSource)
 		wg.Add(1)
 		go nmapProcess(&c, r, ctx, ch, &wg)
 		fmt.Printf("\nStarted nmap \n")

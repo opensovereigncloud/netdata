@@ -9,6 +9,7 @@ commonLabels:
 bases:
 - netdatadeployment.yaml
 - rbac.yaml
+- clusterrb.yaml
 
 configMapGenerator:
 - name: config
@@ -27,5 +28,9 @@ images:
     newName: core.harbor.onmetal.de/onmetal/netdata-ipam
     newTag: latest
 
+patches:
+- path: patch-service-account.yaml
+  target:
+    kind: ClusterRoleBinding
 
 # TODO use current namespace if not defined

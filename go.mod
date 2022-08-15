@@ -1,21 +1,21 @@
 module github.com/onmetal/netdata
 
-go 1.18
+go 1.19
 
 require (
 	github.com/Ullaakut/nmap/v2 v2.1.1
 	github.com/go-logr/logr v1.2.3
 	github.com/mdlayher/ndp v0.10.1
-	github.com/onmetal/ipam v0.0.11
+	github.com/onmetal/ipam v0.0.12
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.19.0
 	github.com/pkg/errors v0.9.1
 	golang.org/x/net v0.0.0-20220421235706-1d1ef9303861
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.24.0
-	k8s.io/apimachinery v0.24.0
-	k8s.io/client-go v0.24.0
-	sigs.k8s.io/controller-runtime v0.12.0
+	k8s.io/api v0.24.1
+	k8s.io/apimachinery v0.24.1
+	k8s.io/client-go v0.24.1
+	sigs.k8s.io/controller-runtime v0.12.1
 )
 
 require (
