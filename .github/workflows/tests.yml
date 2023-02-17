@@ -1,0 +1,42 @@
+name: PR - Go
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+    paths-ignore:
+      - '**.md'
+      - 'deploy/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'deploy/**'
+      - 'docs/**'
+      - '**/*.md'
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.19'
+
+      - uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - run: ./hack/setup-git-redirect.sh
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
