@@ -13,18 +13,22 @@ COPY go.sum go.sum
 COPY hack/ hack/
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
-RUN --mount=type=ssh --mount=type=secret,id=github_pat GITHUB_PAT_PATH=/run/secrets/github_pat ./hack/setup-git-redirect.sh \
+RUN --mount=type=ssh --mount=type=secret,id=github_pat \
+  --mount=type=cache,target=/root/.cache/go-build \
+  --mount=type=cache,target=/go/pkg \
+  GITHUB_PAT_PATH=/run/secrets/github_pat ./hack/setup-git-redirect.sh \
   && mkdir -p -m 0600 ~/.ssh \
   && ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts \
   && go mod download
-
 
 # Copy the go source
 COPY main.go main.go
 COPY controllers/ controllers/
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build -a -o manager main.go
+RUN --mount=type=cache,target=/root/.cache/go-build \
+  --mount=type=cache,target=/go/pkg \
+  CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build -a -o manager main.go
 
 FROM alpine:edge
 ARG USER=root
