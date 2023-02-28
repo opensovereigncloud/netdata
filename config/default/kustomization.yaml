@@ -23,11 +23,6 @@ configMapGenerator:
 configurations:
   - nameReference.yaml
 
-images:
-  - name: netdata-ipam
-    newName: core.harbor.onmetal.de/onmetal/netdata-ipam
-    newTag: latest
-
 patches:
 - path: patch-service-account.yaml
   target:
