@@ -35,7 +35,7 @@ import (
 	"time"
 
 	nmap "github.com/Ullaakut/nmap/v2"
-	ginkgo "github.com/onsi/ginkgo"
+	ginkgo "github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
 )
 
