@@ -19,6 +19,7 @@ jobs:
     - run: hack/setup-git-redirect.sh
       env:
         GITHUB_PAT: ${{ secrets.BOT_PAT }}
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v3
-      timeout-minutes: 5
+    - uses: golangci/golangci-lint-action@v3
+      with:
+        version: v1.51.1
+        args: --timeout 15m
