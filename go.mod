@@ -3,7 +3,7 @@ module github.com/onmetal/netdata
 go 1.20
 
 require (
-	github.com/Ullaakut/nmap/v2 v2.1.1
+	github.com/Ullaakut/nmap/v2 v2.2.2
 	github.com/go-logr/logr v1.2.3
 	github.com/google/addlicense v1.1.1
 	github.com/mdlayher/ndp v0.10.1
