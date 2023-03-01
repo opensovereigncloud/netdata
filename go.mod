@@ -8,7 +8,7 @@ require (
 	github.com/google/addlicense v1.1.1
 	github.com/mdlayher/ndp v0.10.1
 	github.com/mdlayher/netx v0.0.0-20220422152302-c711c2f8512f
-	github.com/onmetal/ipam v0.0.19
+	github.com/onmetal/ipam v0.0.20
 	github.com/onsi/ginkgo/v2 v2.8.4
 	github.com/onsi/gomega v1.27.2
 	github.com/pkg/errors v0.9.1
