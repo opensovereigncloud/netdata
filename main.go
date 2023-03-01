@@ -61,7 +61,7 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		errors.Wrap(err, "unable to add registered types to client scheme")
+		_ = errors.Wrap(err, "unable to add registered types to client scheme")
 	}
 }
 

@@ -59,7 +59,7 @@ func TestAPIs(t *testing.T) {
 	ginkgo.RunSpecs(t, "Controller Suite")
 }
 
-var _ = ginkgo.BeforeSuite(func(done ginkgo.Done) {
+var _ = ginkgo.BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.UseDevMode(true), zap.WriteTo(ginkgo.GinkgoWriter)))
 
 	ginkgo.By("bootstrapping test environment")
@@ -80,7 +80,6 @@ var _ = ginkgo.BeforeSuite(func(done ginkgo.Done) {
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	gomega.Expect(k8sClient).ToNot(gomega.BeNil())
 
-	close(done)
 })
 
 var _ = ginkgo.AfterSuite(func() {

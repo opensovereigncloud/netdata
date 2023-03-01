@@ -32,15 +32,11 @@ package controllers
 
 import (
 	"fmt"
-	"time"
 
 	nmap "github.com/Ullaakut/nmap/v2"
 	ginkgo "github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
 )
-
-const timeout = time.Second * 60
-const interval = time.Second * 2
 
 var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 	ginkgo.BeforeEach(func() {

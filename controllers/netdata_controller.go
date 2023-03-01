@@ -38,7 +38,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -182,7 +181,7 @@ type netdataconf struct {
 
 func (c *netdataconf) getConf() *netdataconf {
 
-	yamlFile, err := ioutil.ReadFile("/etc/manager/netdata-config.yaml")
+	yamlFile, err := os.ReadFile("/etc/manager/netdata-config.yaml")
 	if err != nil {
 		log.Fatalf("yamlFile.Get err   #%v ", err)
 		os.Exit(21)
@@ -205,6 +204,7 @@ func (c *netdataconf) getNMAPInterface() string {
 			log.Printf("interface name %s", i.Name)
 			for _, subi := range subnetList.Items {
 				subnet := subi.Spec.CIDR.String()
+				// only IPv4 networks are supported for now
 				if IpVersion(subnet) == "ipv4" {
 					addrs, _ := i.Addrs()
 					for _, addri := range addrs {
@@ -214,8 +214,6 @@ func (c *netdataconf) getNMAPInterface() string {
 							return i.Name
 						}
 					}
-				} else {
-					// skiped network, require only ipv4
 				}
 			}
 		}
@@ -341,7 +339,7 @@ func kubeconfigCreate() *rest.Config {
 		kubeconfig = config
 	}
 	if err := v1alpha1.AddToScheme(scheme.Scheme); err != nil {
-		errors.Wrap(err, "unable to add registered types to client scheme")
+		_ = errors.Wrap(err, "unable to add registered types to client scheme")
 	}
 	return kubeconfig
 }
@@ -418,7 +416,6 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 	for upindex := range updateLabelsIPS {
 		existedIP := updateLabelsIPS[upindex]
 		existedIP.ObjectMeta.Labels["origin"] = os.Getenv("NETSOURCE")
-		updatedIP := &v1alpha1.IP{}
 		updatedIP, err := client.Update(ctx, &existedIP, v1.UpdateOptions{})
 		if err != nil {
 			log.Printf("update error +%v ", err.Error())
@@ -433,16 +430,14 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
 			log.Printf("get error +%v ", err.Error())
 		}
 		if err != nil && getk8sObject.ObjectMeta.Name != "" {
-			updatedIP := &v1alpha1.IP{}
-			updatedIP, err = client.Update(ctx, &ip, v1.UpdateOptions{})
+			updatedIP, err := client.Update(ctx, &ip, v1.UpdateOptions{})
 			if err != nil {
 				log.Printf("update error +%v ", err.Error())
 			}
 			log.Printf("Updated IP. +%v ", updatedIP)
 
 		} else {
-			createdIP := &v1alpha1.IP{}
-			createdIP, err = client.Create(ctx, &ip, v1.CreateOptions{})
+			createdIP, err := client.Create(ctx, &ip, v1.CreateOptions{})
 			if err != nil {
 				log.Printf("create error +%v ", err.Error())
 			}
