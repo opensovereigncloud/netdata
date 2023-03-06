@@ -12,7 +12,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.9.0
 	github.com/onsi/gomega v1.27.2
 	github.com/pkg/errors v0.9.1
-	golang.org/x/net v0.7.0
+	golang.org/x/net v0.8.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.26.2
 	k8s.io/apimachinery v0.26.2
@@ -63,9 +63,9 @@ require (
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20230209150437-ee73d164e760 // indirect
 	golang.org/x/oauth2 v0.0.0-20220411215720-9780585627b5 // indirect
 	golang.org/x/sync v0.1.0 // indirect
-	golang.org/x/sys v0.5.0 // indirect
-	golang.org/x/term v0.5.0 // indirect
-	golang.org/x/text v0.7.0 // indirect
+	golang.org/x/sys v0.6.0 // indirect
+	golang.org/x/term v0.6.0 // indirect
+	golang.org/x/text v0.8.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.2.0 // indirect
