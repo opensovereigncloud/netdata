@@ -8,7 +8,7 @@ require (
 	github.com/google/addlicense v1.1.1
 	github.com/mdlayher/ndp v0.10.1
 	github.com/mdlayher/netx v0.0.0-20220422152302-c711c2f8512f
-	github.com/onmetal/ipam v0.0.20
+	github.com/onmetal/ipam v0.0.21
 	github.com/onsi/ginkgo/v2 v2.9.2
 	github.com/onsi/gomega v1.27.5
 	github.com/pkg/errors v0.9.1
@@ -17,7 +17,7 @@ require (
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
 	k8s.io/client-go v0.26.3
-	sigs.k8s.io/controller-runtime v0.14.5
+	sigs.k8s.io/controller-runtime v0.14.6
 )
 
 require (
