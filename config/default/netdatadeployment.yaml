@@ -56,34 +56,6 @@ spec:
               cpu: 100m
               ephemeral-storage: 300Mi
               memory: 200Mi
-        - name: manager-ndp
-          command:
-          - /manager
-          volumeMounts:
-          - name: netdata-config
-            mountPath: /etc/manager
-          securityContext:
-            capabilities:
-              add:
-              - NET_ADMIN
-              - NET_RAW
-              - NET_BIND_SERVICE
-          image: "netdata-ipam:latest"
-          imagePullPolicy: Always
-          env:
-          - name: NETSOURCE
-            value: "ndp"
-          - name: RECONCILETIMEOUT
-            value: "600s"
-          resources:
-            limits:
-              cpu: 200m
-              ephemeral-storage: 300Mi
-              memory: 300Mi
-            requests:
-              cpu: 100m
-              ephemeral-storage: 300Mi
-              memory: 200Mi
         - name: manager-kea
           command:
           - /manager
