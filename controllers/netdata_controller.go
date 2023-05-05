@@ -76,6 +76,7 @@ import (
 )
 
 var SubnetNetlinkListener = make(map[string]chan struct{})
+var doOnce sync.Once
 
 // NetdataMap is resulted map of discovered hosts
 type NetdataSpec struct {
@@ -340,6 +341,29 @@ func contains(s []v1alpha1.IP, elem v1alpha1.IP) bool {
 	return false
 }
 
+func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
+
+	// This loop will run infinitely after every 90% of TTL set in config
+	for {
+		ips := getIps(origin)
+		for _, ip := range ips {
+			t, err := strconv.ParseInt(ip.Labels["timestamp"], 10, 64)
+			if err != nil {
+				log.Printf("IP Cleaner : Error in parsing timestamp : %s, IP object : %s", err, ip.ObjectMeta.Name)
+			}
+
+			// delete ip object if the last update is more than configured TTL
+			diff := time.Now().Unix() - t
+			if diff > int64(c.TTL) {
+				log.Printf("IP Cleaner : deleting IP object : %s", ip.ObjectMeta.Name)
+				deleteIP(ctx, &ip)
+			}
+
+		}
+		time.Sleep(time.Second * time.Duration(c.TTL*90/100))
+	}
+}
+
 func createIPAMNetlink(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipamv1alpha1.Subnet) {
 	kubeconfig := kubeconfigCreate()
 	cs, _ := clientset.NewForConfig(kubeconfig)
@@ -350,10 +374,8 @@ func createIPAMNetlink(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subn
 
 	createNewIP := true
 
-	//If MACs  are the same and IP is different - delete the existing object
 	handleDuplicateMacs(ctx, ip, client, &createNewIP)
 
-	// If IPs are the same but MAC is different delete the existing object
 	handleDuplicateIPs(ctx, ip, client, &createNewIP)
 
 	// Create new IP
@@ -449,7 +471,6 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 }
 
 func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool) {
-	// If IPS is same but MAC is different delete the existing object
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS_ip := make(map[string]string)
 	labelsIPS_ip["ip"] = ip.Spec.IP.String()
@@ -1064,6 +1085,12 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		go nmapProcess(&c, r, ctx, ch, &wg)
 		fmt.Printf("\nStarted nmap \n")
 	case "netlink":
+		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
+		doOnce.Do(func() {
+			log.Print("Starting IP Cleaner...")
+			go IPCleaner(ctx, &c, "netlink")
+		})
+
 		// Skip subnets which do not have required label. e.g labelsubnet = oob
 		val, ok := subnet.Labels["labelsubnet"]
 		if !ok || val != c.SubnetLabel["labelsubnet"] {
