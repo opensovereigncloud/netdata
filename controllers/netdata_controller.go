@@ -674,7 +674,7 @@ func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, r *Net
 		ips := ipsubnet.IPS
 		ipsubnet.IPType = IpVersion(ips[0])
 		for jdx := range ips {
-			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "_")
+			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "-")
 		}
 	}
 	labels["origin"] = os.Getenv("NETSOURCE")
@@ -710,7 +710,7 @@ func createNetCRDNetlink(mv NetdataSpec, conf *netdataconf, ctx context.Context,
 		ips := ipsubnet.IPS
 		ipsubnet.IPType = IpVersion(ips[0])
 		for jdx := range ips {
-			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "_")
+			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "-")
 		}
 	}
 	labels["origin"] = os.Getenv("NETSOURCE")
@@ -978,6 +978,12 @@ func NetlinkListener(ctx context.Context, ch chan NetdataMap, conf *netdataconf,
 
 		// Prepare netDataMap and send on the channel
 		m := make(NetdataMap)
+
+		//inflate short IP addresses
+		if strings.Contains(ip, "::") {
+			i := net.ParseIP(ip)
+			ip = FullIPv6(i)
+		}
 
 		m[mac] = newNetdataSpec(mac, ip, "", "ipv6")
 		ch <- m
