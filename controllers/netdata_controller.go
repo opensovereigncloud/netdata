@@ -37,7 +37,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -56,9 +55,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"net/http"
-	"net/url"
 
 	nmap "github.com/Ullaakut/nmap/v2"
 
@@ -93,75 +89,9 @@ type IPsubnet struct {
 
 type NetdataMap map[string]NetdataSpec
 
-type KeaJson []struct {
-	Arguments Arguments `json:"arguments"`
-	Result    int       `json:"result"`
-	Text      string    `json:"text"`
-}
-
-type Lease struct {
-	Cltt      int    `json:"cltt"`
-	FqdnFwd   bool   `json:"fqdn-fwd"`
-	FqdnRev   bool   `json:"fqdn-rev"`
-	Hostname  string `json:"hostname"`
-	HwAddress string `json:"hw-address"`
-	IPAddress string `json:"ip-address"`
-	State     int    `json:"state"`
-	SubnetID  int    `json:"subnet-id"`
-	ValidLft  int    `json:"valid-lft"`
-}
-type Arguments struct {
-	Leases []Lease `json:"leases"`
-}
-
-type PostData struct {
-	Command string   `json:"command"`
-	Service []string `json:"service"`
-}
-
-// '{ "command": "lease4-get-all", "service": [ "dhcp4" ] }'
-// '{ "command": "lease6-get-all", "service": [ "dhcp6" ] }'
-func postData(ipv int) string {
-	res := &PostData{
-		Command: fmt.Sprintf("lease%d-get-all", ipv),
-		Service: []string{fmt.Sprintf("dhcp%d", ipv)},
-	}
-	res1, _ := json.Marshal(res)
-	return string(res1)
-}
-
-/*
-  output=$(curl -s -X POST -H "Content-Type: application/json" -d '{ "command": "lease6-get-all", "service": [ "dhcp6" ] }' http://192.168.10.3:8000/)
-  output=$(curl -s -X POST -H "Content-Type: application/json" -d '{ "command": "lease4-get-all", "service": [ "dhcp4" ] }' http://192.168.10.3:8000/)
-*/
-
-func (r *NetdataReconciler) kealease(apiUrl string, ipv int) []Lease {
-	postData := postData(ipv)
-	r.Log.V(1).Info("Kea post data  is", "postData", postData)
-	resp, err := http.Post(apiUrl, "application/json", strings.NewReader(postData))
-	if err != nil {
-		r.Log.Error(err, "Fail request kea api")
-		return []Lease{}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		r.Log.Error(err, "Fail read kea api answer")
-	}
-
-	r.Log.V(1).Info("Kea result is", "body", body)
-	keajson := KeaJson{}
-	if err = json.Unmarshal(body, &keajson); err != nil {
-		r.Log.V(1).Info("Kea result is not parsed. Error is #%s ", err)
-		return []Lease{}
-	}
-	return keajson[0].Arguments.Leases
-}
-
 type netdataconf struct {
 	Interval    int               `yaml:"interval"`
 	TTL         int               `yaml:"ttl"`
-	KeaApi      []string          `yaml:"dhcp"`
 	IPNamespace string            `default:"default" yaml:"ipnamespace"`
 	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
 }
@@ -226,7 +156,6 @@ func (c *netdataconf) getSubnets() *v1alpha1.SubnetList {
 
 func (c *netdataconf) validate() {
 	c.validateInterval()
-	c.validateKeaApi()
 }
 
 // c.Interval > 50
@@ -244,20 +173,6 @@ func (c *netdataconf) validateInterval() {
 	} else {
 		log.Fatalf("wrong ttl < interval")
 		os.Exit(20)
-	}
-}
-
-// KeaApi correct url
-func (c *netdataconf) validateKeaApi() {
-	for idx := range c.KeaApi {
-		keaendpoint := c.KeaApi[idx]
-		u, err := url.Parse(keaendpoint)
-		if err == nil && u.Scheme != "" && u.Host != "" {
-			log.Printf("valid kea url %s", keaendpoint)
-		} else {
-			log.Fatalf("wrong kea url %s", keaendpoint)
-			os.Exit(20)
-		}
 	}
 }
 
@@ -736,10 +651,6 @@ func createNetCRDNetlink(mv NetdataSpec, conf *netdataconf, ctx context.Context,
 	createIPAMNetlink(conf, ctx, *ipIPAM, subnet)
 }
 
-func newRes(subnet string, k *Lease) NetdataSpec {
-	return newNetdataSpec(k.HwAddress, k.IPAddress, k.Hostname, "ipv4")
-}
-
 func newNetdataSpec(mac string, ip string, hostname string, iptype string) NetdataSpec {
 	ips := []string{ip}
 	ipsubnet := IPsubnet{
@@ -785,30 +696,6 @@ func (mergeRes NetdataMap) addIP2Res(k string, v NetdataSpec) {
 		thisMac.Addresses = append(thisMac.Addresses, v.Addresses[0])
 		mergeRes[k] = thisMac
 	}
-}
-
-func processKeaRes(res []Lease, c *netdataconf, ch chan NetdataMap) {
-	for idx := range res {
-		k := &res[idx]
-		dhcprecord := make(NetdataMap)
-		dhcprecord[k.HwAddress] = newRes("deleteFieldSubnet", k)
-		ch <- dhcprecord
-	}
-}
-
-func kealeaseProcess(c *netdataconf, r *NetdataReconciler, ch chan NetdataMap, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for kidx := range c.KeaApi {
-		keaendpoint := &c.KeaApi[kidx]
-		// fetch data from kea for ipv4
-		res1 := r.kealease(*keaendpoint, 4)
-		processKeaRes(res1, c, ch)
-
-		// fetch data from kea for ipv6
-		res2 := r.kealease(*keaendpoint, 6)
-		processKeaRes(res2, c, ch)
-	}
-	fmt.Print("Kea done\n")
 }
 
 func (mergeRes NetdataMap) filterAndCreateCRD(c *netdataconf, r *NetdataReconciler, ctx context.Context, req ctrl.Request) {
@@ -1080,11 +967,6 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	wg := sync.WaitGroup{}
 	netSource := os.Getenv("NETSOURCE")
 	switch netSource {
-	case "kea":
-		cleanupIps(ctx, &c, netSource)
-		wg.Add(1)
-		go kealeaseProcess(&c, r, ch, &wg)
-		fmt.Printf("\nStarted kea \n")
 	case "nmap":
 		cleanupIps(ctx, &c, netSource)
 		wg.Add(1)

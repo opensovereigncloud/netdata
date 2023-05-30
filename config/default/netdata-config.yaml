@@ -1,7 +1,6 @@
 ---
 interval: 60
 ttl: 3600
-dhcp: ['http://10.96.10.3:8000']
 ipnamespace: "oob"
 subnetLabelSelector:
   labelsubnet: "oob"
