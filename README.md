@@ -42,15 +42,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-### Install by helm
-
-```
-kubectl create ns onmetal
-helm install netdata ./chart -n onmetal  --set image.repository=localhost/netdata
-```
-
-for autoreload require (stakater/reloader)[https://github.com/stakater/Reloader]
-
 
 ### Build image
 
