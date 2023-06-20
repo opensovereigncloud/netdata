@@ -388,7 +388,7 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool) {
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS_ip := make(map[string]string)
-	labelsIPS_ip["ip"] = ip.Spec.IP.String()
+	labelsIPS_ip["ip"] = strings.ReplaceAll(ip.Spec.IP.String(), ":", "-")
 
 	labelSelectorIPS_ip := metav1.LabelSelector{MatchLabels: labelsIPS_ip}
 	ipsListOptions_ip := metav1.ListOptions{
@@ -543,7 +543,7 @@ func checkDuplicateMac(ctx context.Context, ip v1alpha1.IP, client clienta1.IPIn
 
 func checkDuplicateIP(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, deleteIPS []v1alpha1.IP) []v1alpha1.IP {
 	labelsIPS := make(map[string]string)
-	labelsIPS["ip"] = ip.Spec.IP.String()
+	labelsIPS["ip"] = strings.ReplaceAll(ip.Spec.IP.String(), ":", "-")
 
 	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
 	ipsListOptions := metav1.ListOptions{
