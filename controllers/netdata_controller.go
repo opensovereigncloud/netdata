@@ -31,11 +31,8 @@ limitations under the License.
 package controllers
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -246,16 +243,6 @@ func kubeconfigCreate() *rest.Config {
 	return kubeconfig
 }
 
-func contains(s []v1alpha1.IP, elem v1alpha1.IP) bool {
-	for _, v := range s {
-		if v.ObjectMeta.Name == elem.ObjectMeta.Name {
-			return true
-		}
-	}
-
-	return false
-}
-
 func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
 
 	// This loop will run infinitely after every 90% of TTL set in config
@@ -279,7 +266,7 @@ func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
 	}
 }
 
-func createIPAMNetlink(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipamv1alpha1.Subnet) {
+func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipamv1alpha1.Subnet) {
 	kubeconfig := kubeconfigCreate()
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	client := cs.IpamV1Alpha1().IPs(subnet.ObjectMeta.Namespace)
@@ -342,23 +329,24 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 	ipsList, _ := client.List(ctx, ipsListOptions)
 
 	// Special case: If an IP object exists from both kea and Netlink then delete Netlink IP
-	deleteIP := CheckIPFromNetlinkAndKea(ipsList, ctx, ip)
-	if deleteIP != "" {
-		*createNewIP = false // do not create new IP from Netlink
-		err := client.Delete(ctx, deleteIP, v1.DeleteOptions{})
-		if err != nil {
-			log.Printf("ERROR!!  delete ips %+v error +%v \n", deleteIP, err.Error())
-		} else {
-			log.Printf("Same IP object exists from kea and Netlink, Deleted IP object : %s \n", deleteIP)
+	if os.Getenv("NETSOURCE") == "netlink" {
+		deleteIP := CheckIPFromNetlinkAndKea(ipsList, ctx, ip)
+		if deleteIP != "" {
+			*createNewIP = false // do not create new IP from Netlink
+			err := client.Delete(ctx, deleteIP, v1.DeleteOptions{})
+			if err != nil {
+				log.Printf("ERROR!!  delete ips %+v error +%v \n", deleteIP, err.Error())
+			} else {
+				log.Printf("Same IP object exists from kea and Netlink, Deleted IP object : %s \n", deleteIP)
+			}
+			return
 		}
-		// Refresh the list, since we have deleted an item
-		ipsList, _ = client.List(ctx, ipsListOptions)
 	}
 
 	for _, existedIP := range ipsList.Items {
 		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
 			*createNewIP = false
-			// If an IP object with the same IP and same MAC already exists from Netlink and you own it, update the lifetime
+			// If an IP object with the same IP and same MAC already exists from Netlink/nmap and you own it, update the lifetime
 			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
 				for _, v := range existedIP.OwnerReferences {
 					if v.Name == "netdata.onmetal.de/ip" {
@@ -368,8 +356,8 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 							log.Printf("Error in parsing timestamp : %s, IP object : %s", err, existedIP.ObjectMeta.Name)
 						}
 
-						// update timestamp if the last update is more than 2 min (120 sec) or there is no timestamp label
-						if (time.Now().Unix()-t > 120) || (existedIP.Labels["timestamp"] == "") {
+						// update timestamp if the last update is more than 5 min (300 sec) or there is no timestamp label
+						if (time.Now().Unix()-t > 300) || (existedIP.Labels["timestamp"] == "") {
 							existedIP.Labels["timestamp"] = strconv.FormatInt(time.Now().Unix(), 10)
 							updatedIP, err := client.Update(ctx, &existedIP, v1.UpdateOptions{})
 							if err != nil {
@@ -406,165 +394,6 @@ func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPI
 	}
 }
 
-func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP) {
-	kubeconfig := kubeconfigCreate()
-
-	cs, _ := clientset.NewForConfig(kubeconfig)
-
-	// TODO cache result and speedup
-	subnetList := c.getSubnets()
-	// select subnet by ip and ip mask
-	var subnet v1alpha1.Subnet
-
-	for _, k := range subnetList.Items {
-		log.Printf("               CHECK subnet from subnetlist: %s\n", k.ObjectMeta.Name)
-
-		if k.Spec.CIDR != nil {
-			subnetAddr := k.Spec.CIDR.String()
-			_, subnetnetA, _ := net.ParseCIDR(subnetAddr)
-			ipcur := net.ParseIP(ip.Spec.IP.String())
-			log.Printf("ip.Spec.IP.String() ip: %+v\n", ip.Spec.IP.String())
-			log.Printf("COMPARE ip: %+v\nsubnet: %+v", ipcur, subnetnetA)
-			if subnetnetA.Contains(ipcur) {
-				subnet = k
-				break
-			} else {
-				log.Printf("not fit \nip: %+v\nsubnet: %+v\n\n\n", ipcur, subnetnetA)
-			}
-		}
-	}
-	//log.Printf("\n\n\nSelected subnets: %+v\n", subnetList)
-	log.Printf("Selected subnet with ip: %+v\n\n\n", subnet.ObjectMeta.Name)
-	if subnet.ObjectMeta.Name == "" {
-		log.Printf("\nNOT FOUND proper subnet. skipped.: %+v\n", ip)
-		return
-	}
-	ip.Spec.Subnet.Name = subnet.ObjectMeta.Name
-	ip.ObjectMeta.Namespace = subnet.ObjectMeta.Namespace
-
-	// list of ip for delete
-	var deleteIPS []v1alpha1.IP
-	var notDeleteIPS []v1alpha1.IP
-	var updateLabelsIPS []v1alpha1.IP
-
-	client := cs.IpamV1Alpha1().IPs(subnet.ObjectMeta.Namespace)
-	deleteIPS, notDeleteIPS, updateLabelsIPS = checkDuplicateMac(ctx, ip, client, deleteIPS, notDeleteIPS, updateLabelsIPS)
-	// remove ip duplication
-	deleteIPS = checkDuplicateIP(ctx, ip, client, deleteIPS)
-
-	// delete objects
-	for delindex := range deleteIPS {
-		existedIP := deleteIPS[delindex]
-		if contains(notDeleteIPS, existedIP) {
-			log.Printf("not deleted  %+s because it is in not_delete_array \n\n", existedIP.ObjectMeta.Name)
-		} else {
-			err := client.Delete(ctx, existedIP.ObjectMeta.Name, v1.DeleteOptions{})
-			if err != nil {
-				log.Printf("ERROR!!  delete ips %+v error +%v \n\n", existedIP, err.Error())
-			}
-			log.Printf("DELETED ips %s \n\n", existedIP.ObjectMeta.Name)
-		}
-	}
-
-	// update labels
-	for upindex := range updateLabelsIPS {
-		existedIP := updateLabelsIPS[upindex]
-		existedIP.ObjectMeta.Labels["origin"] = os.Getenv("NETSOURCE")
-		updatedIP, err := client.Update(ctx, &existedIP, v1.UpdateOptions{})
-		if err != nil {
-			log.Printf("update error +%v ", err.Error())
-		}
-		log.Printf("Updated LABELs IP. +%v ", updatedIP)
-	}
-
-	// create ip with subnet
-	if len(notDeleteIPS) == 0 {
-		getk8sObject, err := client.Get(ctx, ip.ObjectMeta.Name, v1.GetOptions{})
-		if err != nil {
-			log.Printf("get error +%v ", err.Error())
-		}
-		if err != nil && getk8sObject.ObjectMeta.Name != "" {
-			updatedIP, err := client.Update(ctx, &ip, v1.UpdateOptions{})
-			if err != nil {
-				log.Printf("update error +%v ", err.Error())
-			}
-			log.Printf("Updated IP. +%v ", updatedIP)
-
-		} else {
-			createdIP, err := client.Create(ctx, &ip, v1.CreateOptions{})
-			if err != nil {
-				log.Printf("create error +%v ", err.Error())
-			}
-			log.Printf("Created IP. +%s ", createdIP.ObjectMeta.Name)
-		}
-	}
-
-}
-
-func checkDuplicateMac(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, deleteIPS []v1alpha1.IP, notDeleteIPS []v1alpha1.IP, updateLabelsIPS []v1alpha1.IP) ([]v1alpha1.IP, []v1alpha1.IP, []v1alpha1.IP) {
-	// if (do we have object with different IP address and same origin)
-	//    ->  delete object
-	labelsIPS := make(map[string]string)
-	labelsIPS["mac"] = strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
-
-	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
-	ipsListOptions := metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
-		Limit:         100,
-	}
-	ipsList, _ := client.List(ctx, ipsListOptions)
-	for ipindex := range ipsList.Items {
-		existedIP := ipsList.Items[ipindex]
-		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
-			notDeleteIPS = append(notDeleteIPS, existedIP)
-			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-				log.Printf("labels for current %s  existed Labels:  %+v \n\n", existedIP.ObjectMeta.Name, existedIP.ObjectMeta.Labels)
-			} else {
-				// update- add label origin-os.Getenv("NETSOURCE")
-				if existedIP.ObjectMeta.Labels["origin"] != "kea" {
-					log.Printf("add to update labels to current origin %+v \n\n", existedIP.ObjectMeta.Name)
-					updateLabelsIPS = append(updateLabelsIPS, existedIP)
-				}
-			}
-		} else {
-			log.Printf("existedIP.Spec.IP != ip.Spec.IP\n  %+v != %+v \n\n", existedIP.Spec.IP, ip.Spec.IP)
-			// ndp do not mix with nmap and kea
-			if existedIP.Spec.IP.Net.Is6() == ip.Spec.IP.Net.Is6() {
-				// mac and origin are same, but ip is different - delete
-				if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-					log.Printf("add to delete list %+v \n\n", existedIP.ObjectMeta.Name)
-					deleteIPS = append(deleteIPS, existedIP)
-				}
-			}
-		}
-	}
-	return deleteIPS, notDeleteIPS, updateLabelsIPS
-}
-
-func checkDuplicateIP(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, deleteIPS []v1alpha1.IP) []v1alpha1.IP {
-	labelsIPS := make(map[string]string)
-	labelsIPS["ip"] = strings.ReplaceAll(ip.Spec.IP.String(), ":", "-")
-
-	labelSelectorIPS := metav1.LabelSelector{MatchLabels: labelsIPS}
-	ipsListOptions := metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelectorIPS.MatchLabels).String(),
-		Limit:         100,
-	}
-	ipsList, _ := client.List(ctx, ipsListOptions)
-	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
-	for ipindex := range ipsList.Items {
-		existedIP := ipsList.Items[ipindex]
-		if existedIP.Spec.IP.Equal(ip.Spec.IP) && existedIP.ObjectMeta.Labels["mac"] != mac {
-
-			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-				log.Printf("found ipam ip object with same ip %v and diferent mac %v . DELETE", ip.Spec.IP, mac)
-				deleteIPS = append(deleteIPS, existedIP)
-			}
-		}
-	}
-	return deleteIPS
-}
-
 func FullIPv6(ip net.IP) string {
 	dst := make([]byte, hex.EncodedLen(len(ip)))
 	_ = hex.Encode(dst, ip)
@@ -578,43 +407,7 @@ func FullIPv6(ip net.IP) string {
 		string(dst[28:])
 }
 
-func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, r *NetdataReconciler, req ctrl.Request) {
-	macLow := strings.ToLower(mv.MACAddress)
-	mv.MACAddress = macLow
-
-	crdname := strings.ReplaceAll(macLow, ":", "")
-	labels := make(map[string]string)
-	for idx := range mv.Addresses {
-		ipsubnet := &mv.Addresses[idx]
-		ips := ipsubnet.IPS
-		ipsubnet.IPType = IpVersion(ips[0])
-		for jdx := range ips {
-			labels["ip"] = strings.ReplaceAll(ips[jdx], ":", "-")
-		}
-	}
-	labels["origin"] = os.Getenv("NETSOURCE")
-	labels["mac"] = crdname
-
-	ipaddr, _ := v1alpha1.IPAddrFromString(mv.Addresses[0].IPS[0])
-
-	ipIPAM := &v1alpha1.IP{
-		ObjectMeta: v1.ObjectMeta{
-			GenerateName: crdname + "-" + os.Getenv("NETSOURCE") + "-",
-			Namespace:    req.Namespace,
-			Labels:       labels,
-		},
-		Spec: v1alpha1.IPSpec{
-			Subnet: corev1.LocalObjectReference{
-				Name: "emptynameshouldnotexist",
-			},
-			IP: ipaddr,
-		},
-	}
-
-	createIPAM(conf, ctx, *ipIPAM)
-}
-
-func createNetCRDNetlink(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet *ipamv1alpha1.Subnet) {
+func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet *ipamv1alpha1.Subnet) {
 	macLow := strings.ToLower(mv.MACAddress)
 	mv.MACAddress = macLow
 
@@ -648,7 +441,7 @@ func createNetCRDNetlink(mv NetdataSpec, conf *netdataconf, ctx context.Context,
 		},
 	}
 
-	createIPAMNetlink(conf, ctx, *ipIPAM, subnet)
+	createIPAM(conf, ctx, *ipIPAM, subnet)
 }
 
 func newNetdataSpec(mac string, ip string, hostname string, iptype string) NetdataSpec {
@@ -698,87 +491,6 @@ func (mergeRes NetdataMap) addIP2Res(k string, v NetdataSpec) {
 	}
 }
 
-func (mergeRes NetdataMap) filterAndCreateCRD(c *netdataconf, r *NetdataReconciler, ctx context.Context, req ctrl.Request) {
-	for _, mv := range mergeRes {
-		createNetCRD(mv, c, ctx, r, req)
-	}
-}
-
-type (
-	// ICMPPayload is capable of generating a signed ICMP payload.
-	ICMPPayload struct {
-		Helo      string    `json:"h"`
-		Timestamp time.Time `json:"t"`
-	}
-)
-
-var (
-	secret = make([]byte, 16)
-
-	helo = "netdata-ipam ping-agent"
-)
-
-// NewICMPPayload returns a new ICMPPayload set to current time.
-func NewICMPPayload() *ICMPPayload {
-	return &ICMPPayload{
-		Helo:      helo,
-		Timestamp: time.Now(),
-	}
-}
-
-// Bytes returns a signed payload.
-func (p *ICMPPayload) Bytes() []byte {
-	// THis should never fail.
-	msg, _ := json.Marshal(p)
-
-	h := md5.New()
-	h.Write(secret)
-	h.Write(msg)
-	digest := h.Sum(nil)
-
-	return append(digest, msg...)
-}
-
-func (p *ICMPPayload) Read(payload []byte) error {
-	if len(payload) < 16 {
-		return errors.New("payload too short")
-	}
-
-	h := md5.New()
-	h.Write(secret)
-	h.Write(payload[16:])
-	digest := h.Sum(nil)
-
-	if !bytes.Equal(digest, payload[:16]) {
-		return errors.New("checksum error")
-	}
-
-	return json.Unmarshal(payload[16:], p)
-}
-
-func cleanupIps(ctx context.Context, c *netdataconf, origin string) {
-	subnetList := c.getSubnets()
-	ips := getIps(origin)
-
-	for idx := range ips {
-		var deleteFlag bool
-		deleteFlag = true
-		ip := &ips[idx]
-		// check subnet existens with proper labels
-		for subnetx := range subnetList.Items {
-			sub := &subnetList.Items[subnetx]
-			if ip.Spec.Subnet.Name == sub.ObjectMeta.Name {
-				deleteFlag = false
-				break
-			}
-		}
-		// check time of creation
-		if deleteFlag {
-			deleteIP(ctx, ip)
-		}
-	}
-}
-
 func deleteIP(ctx context.Context, ip *v1alpha1.IP) {
 	kubeconfig := kubeconfigCreate()
 	cs, _ := clientset.NewForConfig(kubeconfig)
@@ -811,7 +523,7 @@ func NetlinkProcessor(ctx context.Context, ch chan NetdataMap, conf *netdataconf
 
 	for entity := range ch {
 		for _, v := range entity {
-			createNetCRDNetlink(v, conf, ctx, subnet)
+			createNetCRD(v, conf, ctx, subnet)
 		}
 	}
 	log.Printf("netlink processor ended")
@@ -952,30 +664,54 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	log.Printf("Started reconciling for subnet : %v", subnet.ObjectMeta.Name)
-	mergeRes := make(NetdataMap)
 
 	// get configmap data
 	var c netdataconf
 	c.getConf()
 
-	//	fmt.Printf("runtime.GOMAXPROC() = %+v \n", runtime.GOMAXPROC)
-	r.Log.V(1).Info("\nMergeRes init state.", "mergeRes", mergeRes)
-	ch := make(chan NetdataMap, 1000)
-
-	chNetlink := make(chan NetdataMap, 1000)
-
-	wg := sync.WaitGroup{}
 	netSource := os.Getenv("NETSOURCE")
 	switch netSource {
 	case "nmap":
-		cleanupIps(ctx, &c, netSource)
+		ch := make(chan NetdataMap, 1000)
+		mergeRes := make(NetdataMap)
+		r.Log.V(1).Info("\nMergeRes init state.", "mergeRes", mergeRes)
+
+		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
+		doOnce.Do(func() {
+			log.Print("Starting IP Cleaner...")
+			go IPCleaner(ctx, &c, "nmap")
+		})
+
+		wg := sync.WaitGroup{}
+
 		wg.Add(1)
 		go nmapProcess(&c, r, ctx, ch, &wg)
 		fmt.Printf("\nStarted nmap \n")
+
+		wg.Wait()
+		r.Log.V(1).Info("\nWg ended \n")
+		close(ch)
+		r.Log.V(1).Info("\nch closed \n")
+
+		for entity := range ch {
+			for k, v := range entity {
+				r.Log.V(1).Info("\ntest 1  mergeRes = %+v \n", mergeRes)
+				r.Log.V(1).Info("\ntest 1  k = %+v \n", k)
+				r.Log.V(1).Info("\ntest 1  v = %+v \n", v)
+				mergeRes.add2map(k, v)
+				r.Log.V(1).Info("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
+			}
+		}
+
+		for _, mv := range mergeRes {
+			createNetCRD(mv, &c, ctx, &subnet)
+		}
+
 	case "netlink":
 		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
 		doOnce.Do(func() {
 			log.Print("Starting IP Cleaner...")
+
 			go IPCleaner(ctx, &c, "netlink")
 		})
 
@@ -995,6 +731,7 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			mu.Lock()
 			SubnetNetlinkListener[subnet.ObjectMeta.Name] = nil
 			mu.Unlock()
+			chNetlink := make(chan NetdataMap, 1000)
 			go NetlinkListener(context.Background(), chNetlink, &c, &subnet)
 			go NetlinkProcessor(context.Background(), chNetlink, &c, &subnet)
 		} else {
@@ -1010,26 +747,6 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		fmt.Printf("\nRequire define proper NETSOURCE environment variable. current NETSOURCE is +%v \n", netSource)
 		os.Exit(11)
 	}
-
-	wg.Wait()
-	r.Log.V(1).Info("\nWg ended \n")
-	close(ch)
-	r.Log.V(1).Info("\nch closed \n")
-
-	for entity := range ch {
-		for k, v := range entity {
-			r.Log.V(1).Info("\ntest 1  mergeRes = %+v \n", mergeRes)
-			r.Log.V(1).Info("\ntest 1  k = %+v \n", k)
-			r.Log.V(1).Info("\ntest 1  v = %+v \n", v)
-			mergeRes.add2map(k, v)
-			r.Log.V(1).Info("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
-		}
-	}
-
-	// filter nets
-	// save new crd
-	mergeRes.filterAndCreateCRD(&c, r, ctx, req)
-
 	return ctrl.Result{}, nil
 }
 
