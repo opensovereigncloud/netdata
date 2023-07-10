@@ -663,11 +663,19 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get subnet.ObjectMeta.Name: %w", err))
 	}
 
-	log.Printf("Started reconciling for subnet : %v", subnet.ObjectMeta.Name)
-
 	// get configmap data
 	var c netdataconf
 	c.getConf()
+
+	// Skip subnets which do not have required label. e.g labelsubnet = oob
+	val, ok := subnet.Labels["labelsubnet"]
+	if !ok || val != c.SubnetLabel["labelsubnet"] {
+		errString := fmt.Sprintf("Not reconciling as Labelsubnet do not match for subnet : %v", subnet.ObjectMeta.Name)
+		log.Print(errString)
+		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf(errString))
+	}
+
+	log.Printf("Started reconciling for subnet : %v", subnet.ObjectMeta.Name)
 
 	netSource := os.Getenv("NETSOURCE")
 	switch netSource {
@@ -714,14 +722,6 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 			go IPCleaner(ctx, &c, "netlink")
 		})
-
-		// Skip subnets which do not have required label. e.g labelsubnet = oob
-		val, ok := subnet.Labels["labelsubnet"]
-		if !ok || val != c.SubnetLabel["labelsubnet"] {
-			errString := fmt.Sprintf("Not reconciling as Labelsubnet do not match for subnet : %v", subnet.ObjectMeta.Name)
-			log.Print(errString)
-			return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf(errString))
-		}
 
 		// We only create netlink listener per subnet, so ignore multiple reconcile for a subnet
 		ch, ok := SubnetNetlinkListener[subnet.ObjectMeta.Name]
