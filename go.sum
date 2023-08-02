@@ -110,8 +110,8 @@ github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9G
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/onmetal/ipam v0.0.23 h1:TN17moei09DfUl+s98+1HzWhxKVBIB/Rk05Q3LBk3/w=
-github.com/onmetal/ipam v0.0.23/go.mod h1:A6GTgIyfsff1qs/uKwA85L4v1bXNQsyon84JmTPqWKg=
+github.com/onmetal/ipam v0.0.24 h1:gwfbXNagpY6YDtvV/7dVqDGccnQ8IDOr00gE3HxCx8c=
+github.com/onmetal/ipam v0.0.24/go.mod h1:hoO+L3u0nogxsCjI2Dw48YxwXBcYPbuORkfa0CQ8Bl0=
 github.com/onsi/ginkgo/v2 v2.11.0 h1:WgqUCUt/lT6yXoQ8Wef0fsNn5cAuMK7+KT9UFRz2tcU=
 github.com/onsi/ginkgo/v2 v2.11.0/go.mod h1:ZhrRA5XmEE3x3rhlzamx/JJvujdZoJ2uvgI7kR0iZvM=
 github.com/onsi/gomega v1.27.10 h1:naR28SdDFlqrG6kScpT8VWpu1xWY5nJRCF3XaYyBjhI=
