@@ -37,7 +37,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +59,7 @@ import (
 	clienta1 "github.com/onmetal/ipam/clientset/v1alpha1"
 
 	ipamv1alpha1 "github.com/onmetal/ipam/api/v1alpha1"
+	ping "github.com/prometheus-community/pro-bing"
 	"golang.org/x/sys/unix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -95,7 +95,6 @@ type netdataconf struct {
 
 func (c *netdataconf) getConf() *netdataconf {
 	yamlFile, err := os.ReadFile("/etc/manager/netdata-config.yaml")
-
 	if err != nil {
 		log.Fatalf("yamlFile.Get err   #%v ", err)
 		os.Exit(21)
@@ -245,24 +244,33 @@ func kubeconfigCreate() *rest.Config {
 
 func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
 
-	// This loop will run infinitely after every 90% of TTL set in config
 	for {
 		ips := getIps(origin)
 		for _, ip := range ips {
-			t, err := strconv.ParseInt(ip.Labels["timestamp"], 10, 64)
+			ipAddress := ip.Spec.IP.String()
+
+			pinger, err := ping.NewPinger(ipAddress)
 			if err != nil {
-				log.Printf("IP Cleaner : Error in parsing timestamp : %s, IP object : %s", err, ip.ObjectMeta.Name)
+				fmt.Printf("IP Cleaner : Address could not be resolved, IP object - %s", ip.Name) // no such host, the address cant be resolved
+				continue
 			}
 
-			// delete ip object if the last update is more than configured TTL
-			diff := time.Now().Unix() - t
-			if diff > int64(c.TTL) {
-				log.Printf("IP Cleaner : deleting IP object : %s", ip.ObjectMeta.Name)
-				deleteIP(ctx, &ip)
-			}
+			pinger.Count = 3
+			pinger.Timeout = time.Second * 5
+			err = pinger.Run()
 
+			// If ping fails, try one more time after 5 sec if it still fails delete the ip object
+			if err != nil || pinger.PacketsRecv == 0 {
+				fmt.Printf("IP Cleaner :ping failed, redialing in 5 sec for IP object - %s, ", ip.Name) // no such host, the address cant be resolved
+				time.Sleep(time.Second * 5)
+				err = pinger.Run()
+				if err != nil || pinger.PacketsRecv == 0 {
+					fmt.Printf("IP Cleaner :ping failed, deleting IP object : %s", ip.ObjectMeta.Name)
+					deleteIP(ctx, &ip)
+				}
+			}
 		}
-		time.Sleep(time.Second * time.Duration(c.TTL*90/100))
+		time.Sleep(time.Second * time.Duration(c.TTL))
 	}
 }
 
@@ -346,29 +354,6 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 	for _, existedIP := range ipsList.Items {
 		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
 			*createNewIP = false
-			// If an IP object with the same IP and same MAC already exists from Netlink/nmap and you own it, update the lifetime
-			if existedIP.ObjectMeta.Labels["origin"] == os.Getenv("NETSOURCE") {
-				for _, v := range existedIP.OwnerReferences {
-					if v.Name == "netdata.onmetal.de/ip" {
-
-						t, err := strconv.ParseInt(existedIP.Labels["timestamp"], 10, 64)
-						if err != nil {
-							log.Printf("Error in parsing timestamp : %s, IP object : %s", err, existedIP.ObjectMeta.Name)
-						}
-
-						// update timestamp if the last update is more than 5 min (300 sec) or there is no timestamp label
-						if (time.Now().Unix()-t > 300) || (existedIP.Labels["timestamp"] == "") {
-							existedIP.Labels["timestamp"] = strconv.FormatInt(time.Now().Unix(), 10)
-							updatedIP, err := client.Update(ctx, &existedIP, v1.UpdateOptions{})
-							if err != nil {
-								log.Printf("Update error : +%v, IP object : %s ", err.Error(), updatedIP.ObjectMeta.Name)
-							} else {
-								log.Printf("Updated timestamp of IP object: %s \n", updatedIP.ObjectMeta.Name)
-							}
-						}
-					}
-				}
-			}
 		}
 	}
 }
@@ -423,7 +408,6 @@ func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet
 	}
 	labels["origin"] = os.Getenv("NETSOURCE")
 	labels["mac"] = crdname
-	labels["timestamp"] = strconv.FormatInt(time.Now().Unix(), 10)
 	labels["labelsubnet"] = conf.SubnetLabel["labelsubnet"]
 	ipaddr, _ := v1alpha1.IPAddrFromString(mv.Addresses[0].IPS[0])
 
