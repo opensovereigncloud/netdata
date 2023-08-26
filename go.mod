@@ -12,7 +12,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus-community/pro-bing v0.3.0
 	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/sys v0.10.0
+	golang.org/x/sys v0.11.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.28.1
 	k8s.io/apimachinery v0.28.1
