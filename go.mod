@@ -1,6 +1,6 @@
 module github.com/onmetal/netdata
 
-go 1.20
+go 1.21
 
 require (
 	github.com/Ullaakut/nmap/v2 v2.2.2
