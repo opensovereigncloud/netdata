@@ -93,8 +93,9 @@ type netdataconf struct {
 	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
 }
 
-func (c *netdataconf) getConf() *netdataconf {
-	yamlFile, err := os.ReadFile("/etc/manager/netdata-config.yaml")
+func (c *netdataconf) getConf(r *NetdataReconciler) *netdataconf {
+
+	yamlFile, err := os.ReadFile(r.Config)
 	if err != nil {
 		log.Fatalf("yamlFile.Get err   #%v ", err)
 		os.Exit(21)
@@ -175,8 +176,33 @@ func (c *netdataconf) validateInterval() {
 // NetdataReconciler reconciles a Netdata object
 type NetdataReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	Log         logr.Logger
+	Scheme      *runtime.Scheme
+	Config      string
+	disabled    bool
+	disabledMtx sync.RWMutex
+}
+
+func (r *NetdataReconciler) enable() {
+	r.disabledMtx.Lock()
+	defer r.disabledMtx.Unlock()
+	r.disabled = false
+}
+
+func (r *NetdataReconciler) disable() {
+	r.disabledMtx.Lock()
+	defer r.disabledMtx.Unlock()
+	r.disabled = true
+}
+
+func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	r.disabledMtx.RLock()
+	defer r.disabledMtx.RUnlock()
+	if r.disabled {
+		return ctrl.Result{}, nil
+	}
+
+	return r.reconcile(ctx, req)
 }
 
 func nmapScan(targetSubnet string, ctx context.Context) []nmap.Host {
@@ -636,20 +662,20 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 
 // +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet/status,verbs=get
-func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.Log.WithValues("netdata", req.NamespacedName)
 	var subnet ipamv1alpha1.Subnet
 	err := r.Get(ctx, req.NamespacedName, &subnet)
 	if err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get Subnet: %w", err))
+		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get Subnet: %v", err))
 	}
 	if subnet.ObjectMeta.Name == "" {
-		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get subnet.ObjectMeta.Name: %w", err))
+		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get subnet.ObjectMeta.Name: %v", err))
 	}
 
 	// get configmap data
 	var c netdataconf
-	c.getConf()
+	c.getConf(r)
 
 	// Skip subnets which do not have required label. e.g labelsubnet = oob
 	val, ok := subnet.Labels["labelsubnet"]

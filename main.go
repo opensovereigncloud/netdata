@@ -113,6 +113,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Log:    ctrl.Log.WithName("controllers").WithName("Netdata"),
 		Scheme: mgr.GetScheme(),
+		Config: "/etc/manager/netdata-config.yaml",
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Netdata")
 		os.Exit(1)

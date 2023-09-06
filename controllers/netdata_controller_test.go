@@ -34,31 +34,105 @@ import (
 	"fmt"
 
 	nmap "github.com/Ullaakut/nmap/v2"
-	ginkgo "github.com/onsi/ginkgo/v2"
-	gomega "github.com/onsi/gomega"
+	ipamv1alpha1 "github.com/onmetal/ipam/api/v1alpha1"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	controllerruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
-	ginkgo.BeforeEach(func() {
+var _ = Describe("Netdata Controller delete expired", func() {
+	var ns string
+	BeforeEach(func(ctx SpecContext) {
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "testns-"},
+		}
+		Expect(k8sClient.Create(ctx, namespace)).To(Succeed())
+		ns = namespace.Name
+		DeferCleanup(func(ctx SpecContext) {
+			Expect(k8sClient.Delete(ctx, namespace)).To(Succeed())
+		})
 	})
 
-	ginkgo.AfterEach(func() {
+	var subnet *ipamv1alpha1.Subnet
+	var res reconcile.Result
+	var err error
+	BeforeEach(func() {
+		subnet = &ipamv1alpha1.Subnet{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: ipamv1alpha1.GroupVersion.String(),
+				Kind:       "Subnet",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: ns,
+				Name:      "subnettest",
+				Labels: map[string]string{
+					"labelsubnet": "oob",
+				},
+			},
+			Spec: ipamv1alpha1.SubnetSpec{
+				Network: v1.LocalObjectReference{Name: "test"},
+			},
+		}
+		res = reconcile.Result{}
+		err = nil
 	})
 
-	ginkgo.Context("Test toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error)", func() {
-		ginkgo.It("toNetdataMap", func() {
+	When("Subnet has no label labelsubnet", func() {
+
+		JustBeforeEach(func(ctx SpecContext) {
+			delete(subnet.Labels, "labelsubnet")
+			netdataReconciler.disable()
+
+			// Create a subnet and test if it is created successfully
+			Expect(k8sClient.Create(ctx, subnet)).To(Succeed())
+			Eventually(func(g Gomega, ctx SpecContext) {
+				var obj ipamv1alpha1.Subnet
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "subnettest"}, &obj)).To(Succeed())
+			}, ctx, "3s").Should(Succeed())
+
+			netdataReconciler.enable()
+			res, err = netdataReconciler.Reconcile(ctx, controllerruntime.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "subnettest"}})
+
+		})
+
+		It("Test valid subnet label ", func(ctx SpecContext) {
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("Not reconciling as Labelsubnet do not match for subnet : subnettest"))
+			Expect(res).To(Equal(reconcile.Result{}))
+		})
+	})
+
+	When("No valid subnet found", func() {
+		JustBeforeEach(func(ctx SpecContext) {
+			res, err = netdataReconciler.Reconcile(ctx, controllerruntime.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "subnettest"}})
+			fmt.Println(res, err)
+		})
+
+		It("Test valid subnet", func(ctx SpecContext) {
+			Expect(err).To(MatchError("cannot get Subnet: Subnet.ipam.onmetal.de \"subnettest\" not found"))
+			Expect(res).To(Equal(reconcile.Result{}))
+		})
+	})
+
+	Context("Test toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error)", func() {
+		It("toNetdataMap", func() {
 			host := nmap.Host{}
 			subnet := "1.2.3.0/24"
 			var expectedVal NetdataMap
 			res, err := toNetdataMap(&host, subnet)
-			gomega.Expect(res).To(gomega.Equal(expectedVal))
-			gomega.Expect(err).To(gomega.HaveOccurred())
-			gomega.Expect(err.Error()).To(gomega.Equal("No data for new crd"))
+			Expect(res).To(Equal(expectedVal))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("No data for new crd"))
 		})
 	})
 
-	ginkgo.Context("Test NetdataMap.add2map() function", func() {
-		ginkgo.It("Add NetdataSpec one by one", func() {
+	Context("Test NetdataMap.add2map() function", func() {
+		It("Add NetdataSpec one by one", func() {
 
 			mergeRes := make(NetdataMap)
 
@@ -75,7 +149,7 @@ var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 
 			mergeRes.add2map(mac, keySpec)
 			// added first
-			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
+			Expect(mergeRes[mac]).To(Equal(keySpec))
 			fmt.Printf(" \n\n in test mergeRes = %+v \n\n", mergeRes)
 
 			mac2 := "55:55:55:55:55:55"
@@ -92,8 +166,8 @@ var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 			mergeRes.add2map(mac2, keySpec2)
 			fmt.Printf("\n\n in test2 mergeRes = %+v \n\n", mergeRes)
 			// added second
-			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
-			gomega.Expect(mergeRes[mac2]).To(gomega.Equal(keySpec2))
+			Expect(mergeRes[mac]).To(Equal(keySpec))
+			Expect(mergeRes[mac2]).To(Equal(keySpec2))
 
 			ipsubnet3 := IPsubnet{
 				IPS:    []string{"192.168.77.77"},
@@ -108,10 +182,10 @@ var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 			mergeRes.add2map(mac2, keySpec3)
 			fmt.Printf("\n\n in test 3 mergeRes = %+v \n\n", mergeRes)
 			// added third
-			gomega.Expect(mergeRes[mac]).To(gomega.Equal(keySpec))
-			gomega.Expect(mergeRes[mac2]).NotTo(gomega.Equal(keySpec2))
-			gomega.Expect(len(mergeRes[mac2].Addresses)).To(gomega.Equal(2))
-			gomega.Expect(len(mergeRes[mac2].Hostname)).To(gomega.Equal(2))
+			Expect(mergeRes[mac]).To(Equal(keySpec))
+			Expect(mergeRes[mac2]).NotTo(Equal(keySpec2))
+			Expect(len(mergeRes[mac2].Addresses)).To(Equal(2))
+			Expect(len(mergeRes[mac2].Hostname)).To(Equal(2))
 
 			ipsubnet4 := IPsubnet{
 				IPS:    []string{"192.168.77.11"},
@@ -125,9 +199,9 @@ var _ = ginkgo.Describe("Netdata Controller delete expired", func() {
 			}
 
 			mergeRes.add2map(mac2, keySpec4)
-			gomega.Expect(len(mergeRes[mac2].Addresses)).To(gomega.Equal(2))
-			gomega.Expect(len(mergeRes[mac2].Addresses[1].IPS)).To(gomega.Equal(2))
-			gomega.Expect(len(mergeRes[mac2].Hostname)).To(gomega.Equal(2))
+			Expect(len(mergeRes[mac2].Addresses)).To(Equal(2))
+			Expect(len(mergeRes[mac2].Addresses[1].IPS)).To(Equal(2))
+			Expect(len(mergeRes[mac2].Hostname)).To(Equal(2))
 		})
 	})
 
