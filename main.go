@@ -43,7 +43,9 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/onmetal/netdata/controllers"
 	// +kubebuilder:scaffold:imports
@@ -96,13 +98,18 @@ func main() {
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:             scheme,
-		MetricsBindAddress: metricsAddr,
-		Port:               9443,
-		LeaderElection:     enableLeaderElection,
-		LeaderElectionID:   "d0afb540.onmetal.de",
-		SyncPeriod:         &(syncPeriod),
-		Namespace:          ns,
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
+		LeaderElection:   enableLeaderElection,
+		LeaderElectionID: "d0afb540.onmetal.de",
+		Cache: cache.Options{
+			SyncPeriod: &(syncPeriod),
+			DefaultNamespaces: map[string]cache.Config{
+				ns: {},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
