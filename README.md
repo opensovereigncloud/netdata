@@ -15,10 +15,10 @@ The Netdata operator keeps a watch over subnets and scans or discovers the serve
 4. When the subnet is deleted, the Netlink process also stops the go routines.
 5. The Netada operator creates ip objects with two important labels ip address and the mac of the server. The IP and MAC info is further consumed by the oob-operator.
 
-### IP Cleanup
-1. A cron job is created for NMAP/Netlink process, this cron job uses IP address ping mechanism to find out invalid IP addresses.
-2. Cron job will run on all IP objects stored in the k8s cluster, it will try to ping the IP address. If the IP address is not reachable, it gets deleted after the retry mechanism.
-3. The cron job runs for the infinite time, it loops after configured time from the config map.
+### IP object Cleanup process
+1. A cron job is created for NMAP/Netlink process, this cron job runs for infinite time, in a single iteration all the IP objects are fetched from the k8s cluster.
+2. A Cron job will run on all IP objects fetched, it will try to ping the IP address. If the IP address is not reachable, it gets deleted after the retry mechanism.
+3. Once the single iteration is completed the cron job will pause its execution for the TTL configured from the config map.
 
 #### Workflow
 
