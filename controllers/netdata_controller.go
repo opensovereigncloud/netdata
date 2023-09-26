@@ -34,7 +34,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strings"
@@ -93,29 +92,30 @@ type netdataconf struct {
 	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
 }
 
-func (c *netdataconf) getConf(r *NetdataReconciler) *netdataconf {
+func (c *netdataconf) getConf(r *NetdataReconciler, log logr.Logger) *netdataconf {
 
 	yamlFile, err := os.ReadFile(r.Config)
 	if err != nil {
-		log.Fatalf("yamlFile.Get err   #%v ", err)
+		log.Error(err, "yamlFile.Get error")
 		os.Exit(21)
 	}
 	err = yaml.Unmarshal(yamlFile, c)
 	if err != nil {
-		log.Fatalf("Unmarshal: %v", err)
+		log.Error(err, "Unmarshal error")
 	}
-	c.validate()
-	log.Printf("Config is #%v ", c)
+	c.validate(log)
+
+	log.Info(fmt.Sprintf("Config is %v ", c))
 
 	return c
 }
 
-func (c *netdataconf) getNMAPInterface() string {
+func (c *netdataconf) getNMAPInterface(log logr.Logger) string {
 	if os.Getenv("NETSOURCE") == "nmap" {
-		subnetList := c.getSubnets()
+		subnetList := c.getSubnets(log)
 		ifaces, _ := net.Interfaces()
 		for _, i := range ifaces {
-			log.Printf("interface name %s", i.Name)
+			log.Info(fmt.Sprintf("interface name %s", i.Name))
 			for _, subi := range subnetList.Items {
 				subnet := subi.Spec.CIDR.String()
 				// only IPv4 networks are supported for now
@@ -136,8 +136,8 @@ func (c *netdataconf) getNMAPInterface() string {
 }
 
 // get subnets by label clusterwide
-func (c *netdataconf) getSubnets() *v1alpha1.SubnetList {
-	kubeconfig := kubeconfigCreate()
+func (c *netdataconf) getSubnets(log logr.Logger) *v1alpha1.SubnetList {
+	kubeconfig := kubeconfigCreate(log)
 
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	clientSubnet := cs.IpamV1Alpha1().Subnets(metav1.NamespaceAll)
@@ -151,24 +151,16 @@ func (c *netdataconf) getSubnets() *v1alpha1.SubnetList {
 	return subnetList
 }
 
-func (c *netdataconf) validate() {
-	c.validateInterval()
+func (c *netdataconf) validate(log logr.Logger) {
+	c.validateInterval(log)
 }
 
-// c.Interval > 50
 // TTL > Interval
-func (c *netdataconf) validateInterval() {
+func (c *netdataconf) validateInterval(log logr.Logger) {
 	if c.TTL > c.Interval {
-		log.Printf("valid ttl > interval")
+		log.Info("valid ttl > interval")
 	} else {
-		log.Fatalf("wrong ttl < interval")
-		os.Exit(20)
-	}
-
-	if c.TTL > c.Interval {
-		log.Printf("valid ttl > interval")
-	} else {
-		log.Fatalf("wrong ttl < interval")
+		log.Error(fmt.Errorf("wrong ttl < interval"), "error")
 		os.Exit(20)
 	}
 }
@@ -205,7 +197,7 @@ func (r *NetdataReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return r.reconcile(ctx, req)
 }
 
-func nmapScan(targetSubnet string, ctx context.Context) []nmap.Host {
+func nmapScan(targetSubnet string, ctx context.Context, log logr.Logger) []nmap.Host {
 	//  setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip  /usr/bin/nmap
 	// nmap --privileged -sn -oX - 192.168.178.0/24
 	scanner, err := nmap.NewScanner(
@@ -215,16 +207,16 @@ func nmapScan(targetSubnet string, ctx context.Context) []nmap.Host {
 		nmap.WithContext(ctx),
 	)
 	if err != nil {
-		log.Fatalf("unable to create nmap scanner: %v", err)
+		log.Error(err, "unable to create nmap scanner")
 	}
 
 	result, warnings, err := scanner.Run()
 	if err != nil {
-		log.Fatalf("unable to run nmap scan: %v", err)
+		log.Error(err, "unable to run nmap scan")
 	}
 
 	if warnings != nil {
-		log.Printf("Warnings: \n %v", warnings)
+		log.Info(fmt.Sprintf("Warnings: \n %v", warnings))
 	}
 
 	// Use the results to print an example output
@@ -234,31 +226,31 @@ func nmapScan(targetSubnet string, ctx context.Context) []nmap.Host {
 			continue
 		}
 
-		fmt.Printf("Host %q:\n", host.Addresses[0])
+		log.Info(fmt.Sprintf("Host %q:", host.Addresses[0]))
 
 		for idx := range host.Ports {
 			port := &host.Ports[idx]
-			fmt.Printf("\tPort %d/%s %s %s\n", port.ID, port.Protocol, port.State, port.Service.Name)
+			log.Info(fmt.Sprintf("\tPort %d/%s %s %s", port.ID, port.Protocol, port.State, port.Service.Name))
 		}
 	}
 
-	fmt.Printf("Nmap done: %d hosts up scanned in %3f seconds\n", len(result.Hosts), result.Stats.Finished.Elapsed)
+	log.Info(fmt.Sprintf("Nmap done: %d hosts up scanned in %3f seconds", len(result.Hosts), result.Stats.Finished.Elapsed))
 	return result.Hosts
 }
 
-func kubeconfigCreate() *rest.Config {
+func kubeconfigCreate(log logr.Logger) *rest.Config {
 	var kubeconfig *rest.Config
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath != "" {
 		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 		if err != nil {
-			log.Printf("unable to load kubeconfig from %s: %v", kubeconfigPath, err)
+			log.Error(err, fmt.Sprintf("unable to load kubeconfig from %s: ", kubeconfigPath))
 		}
 		kubeconfig = config
 	} else {
 		config, err := rest.InClusterConfig()
 		if err != nil {
-			log.Printf("unable to load in-cluster config: %v", err)
+			log.Error(err, "unable to load in-cluster config")
 		}
 		kubeconfig = config
 	}
@@ -268,16 +260,16 @@ func kubeconfigCreate() *rest.Config {
 	return kubeconfig
 }
 
-func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
+func IPCleaner(ctx context.Context, c *netdataconf, origin string, log logr.Logger) {
 
 	for {
-		ips := getIps(origin)
+		ips := getIps(origin, log)
 		for _, ip := range ips {
 			ipAddress := ip.Spec.IP.String()
 
 			pinger, err := ping.NewPinger(ipAddress)
 			if err != nil {
-				fmt.Printf("IP Cleaner : Address could not be resolved, IP object - %s", ip.Name) // no such host, the address cant be resolved
+				log.Info(fmt.Sprintf("IP Cleaner Address could not be resolved, IP object: %s", ip.Name)) // no such host, the address cant be resolved
 				continue
 			}
 
@@ -287,12 +279,12 @@ func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
 
 			// If ping fails, try one more time after 5 sec if it still fails delete the ip object
 			if err != nil || pinger.PacketsRecv == 0 {
-				fmt.Printf("IP Cleaner :ping failed, redialing in 5 sec for IP object - %s, ", ip.Name) // no such host, the address cant be resolved
+				log.Info(fmt.Sprintf("IP Cleaner ping failed, redialing in 5 sec for IP object: %s, ", ip.Name)) // no such host, the address cant be resolved
 				time.Sleep(time.Second * 5)
 				err = pinger.Run()
 				if err != nil || pinger.PacketsRecv == 0 {
-					fmt.Printf("IP Cleaner :ping failed, deleting IP object : %s", ip.ObjectMeta.Name)
-					deleteIP(ctx, &ip)
+					log.Info(fmt.Sprintf("IP Cleaner ping failed, deleting IP object: %s", ip.ObjectMeta.Name))
+					deleteIP(ctx, &ip, log)
 				}
 			}
 		}
@@ -300,8 +292,8 @@ func IPCleaner(ctx context.Context, c *netdataconf, origin string) {
 	}
 }
 
-func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipamv1alpha1.Subnet) {
-	kubeconfig := kubeconfigCreate()
+func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
+	kubeconfig := kubeconfigCreate(log)
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	client := cs.IpamV1Alpha1().IPs(subnet.ObjectMeta.Namespace)
 
@@ -310,9 +302,9 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipa
 
 	createNewIP := true
 
-	handleDuplicateMacs(ctx, ip, client, &createNewIP)
+	handleDuplicateMacs(ctx, ip, client, &createNewIP, log)
 
-	handleDuplicateIPs(ctx, ip, client, &createNewIP)
+	handleDuplicateIPs(ctx, ip, client, &createNewIP, log)
 
 	// Create new IP
 	if createNewIP {
@@ -320,9 +312,9 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipa
 		ip.OwnerReferences = append(ip.OwnerReferences, ref)
 		createdIP, err := client.Create(ctx, &ip, v1.CreateOptions{})
 		if err != nil {
-			log.Printf("Create IP error +%v ", err.Error())
+			log.Error(err, "Create IP error")
 		}
-		log.Printf("Created IP object : %s \n", createdIP.ObjectMeta.Name)
+		log.Info(fmt.Sprintf("Created IP object: %s \n", createdIP.ObjectMeta.Name))
 
 	}
 }
@@ -351,7 +343,7 @@ func CheckIPFromNetlinkAndKea(ips *ipamv1alpha1.IPList, ctx context.Context, ip 
 	return ""
 }
 
-func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool) {
+func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool, log logr.Logger) {
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS := make(map[string]string)
 	labelsIPS["mac"] = mac
@@ -369,9 +361,9 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 			*createNewIP = false // do not create new IP from Netlink
 			err := client.Delete(ctx, deleteIP, v1.DeleteOptions{})
 			if err != nil {
-				log.Printf("ERROR!!  delete ips %+v error +%v \n", deleteIP, err.Error())
+				log.Error(err, "error in deleting ip : "+deleteIP)
 			} else {
-				log.Printf("Same IP object exists from kea and Netlink, Deleted IP object : %s \n", deleteIP)
+				log.Info(fmt.Sprintf("Same IP object exists from kea and Netlink, Deleted IP object: %s", deleteIP))
 			}
 			return
 		}
@@ -384,7 +376,7 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 	}
 }
 
-func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool) {
+func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool, log logr.Logger) {
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS_ip := make(map[string]string)
 	labelsIPS_ip["ip"] = strings.ReplaceAll(ip.Spec.IP.String(), ":", "-")
@@ -397,9 +389,7 @@ func handleDuplicateIPs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPI
 	ipsList_ip, _ := client.List(ctx, ipsListOptions_ip)
 	for _, existedIP := range ipsList_ip.Items {
 		if existedIP.ObjectMeta.Labels["mac"] != mac {
-			log.Printf("**************************************************************")
-			log.Printf("ERROR : Duplicate ip found, existing object : %v, new mac = %v", existedIP.ObjectMeta.Name, mac)
-			log.Printf("**************************************************************")
+			log.Error(fmt.Errorf("ERROR : Duplicate ip found, existing object : %v, new mac = %v", existedIP.ObjectMeta.Name, mac), "ERROR")
 			*createNewIP = false
 		}
 	}
@@ -418,7 +408,7 @@ func FullIPv6(ip net.IP) string {
 		string(dst[28:])
 }
 
-func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet *ipamv1alpha1.Subnet) {
+func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
 	macLow := strings.ToLower(mv.MACAddress)
 	mv.MACAddress = macLow
 
@@ -451,7 +441,7 @@ func createNetCRD(mv NetdataSpec, conf *netdataconf, ctx context.Context, subnet
 		},
 	}
 
-	createIPAM(conf, ctx, *ipIPAM, subnet)
+	createIPAM(conf, ctx, *ipIPAM, subnet, log)
 }
 
 func newNetdataSpec(mac string, ip string, hostname string, iptype string) NetdataSpec {
@@ -501,20 +491,20 @@ func (mergeRes NetdataMap) addIP2Res(k string, v NetdataSpec) {
 	}
 }
 
-func deleteIP(ctx context.Context, ip *v1alpha1.IP) {
-	kubeconfig := kubeconfigCreate()
+func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) {
+	kubeconfig := kubeconfigCreate(log)
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	client := cs.IpamV1Alpha1().IPs(ip.ObjectMeta.Namespace)
 	err := client.Delete(ctx, ip.ObjectMeta.Name, v1.DeleteOptions{})
 	if err != nil {
-		fmt.Printf("deleteIP ERROR!!  %+v error +%v \n\n", ip, err.Error())
+		log.Error(err, "delete IP error")
 	} else {
-		fmt.Printf("deleted IP  %s \n", ip.ObjectMeta.Name)
+		log.Info(fmt.Sprintf("deleted IP  %s", ip.ObjectMeta.Name))
 	}
 }
 
-func getIps(origin string) []v1alpha1.IP {
-	kubeconfig := kubeconfigCreate()
+func getIps(origin string, log logr.Logger) []v1alpha1.IP {
+	kubeconfig := kubeconfigCreate(log)
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	clientip := cs.IpamV1Alpha1().IPs(metav1.NamespaceAll)
 
@@ -528,25 +518,25 @@ func getIps(origin string) []v1alpha1.IP {
 	return ipList.Items
 }
 
-func NetlinkProcessor(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet) {
-	log.Printf("starting netlink processor for subnet %s", subnet.Name)
+func NetlinkProcessor(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
+	log.Info(fmt.Sprintf("starting netlink processor for subnet %s", subnet.Name))
 
 	for entity := range ch {
 		for _, v := range entity {
-			createNetCRD(v, conf, ctx, subnet)
+			createNetCRD(v, conf, ctx, subnet, log)
 		}
 	}
-	log.Printf("netlink processor ended")
+	log.Info("netlink processor ended")
 
 }
 
-func NetlinkListener(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet) {
-	log.Printf("starting netlink listener for subnet %s", subnet.Name)
+func NetlinkListener(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
+	log.Info(fmt.Sprintf("starting netlink listener for subnet %s", subnet.Name))
 
 	chNetlink := make(chan netlink.NeighUpdate)
 	done := make(chan struct{})
 	if err := netlink.NeighSubscribe(chNetlink, done); err != nil {
-		log.Printf("Netlink listener subscription failed, %v", err)
+		log.Error(err, "Netlink listener subscription failed")
 		return
 	}
 
@@ -598,7 +588,7 @@ func NetlinkListener(ctx context.Context, ch chan NetdataMap, conf *netdataconf,
 		ch <- m
 	}
 	close(ch)
-	log.Printf("Netlink listener ended")
+	log.Info("Netlink listener ended")
 }
 
 func IpVersion(s string) string {
@@ -631,30 +621,30 @@ func toNetdataMap(host *nmap.Host, subnet string) (NetdataMap, error) {
 	return res, nil
 }
 
-func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup) {
+func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch chan NetdataMap, wg *sync.WaitGroup, log logr.Logger) {
 	defer wg.Done()
-	subnetList := c.getSubnets()
+	subnetList := c.getSubnets(log)
 	for _, subi := range subnetList.Items {
 		// check if at least 1 interface belong to subnet
-		if len(c.getNMAPInterface()) > 0 {
+		if len(c.getNMAPInterface(log)) > 0 {
 
 			subnet := subi.Spec.CIDR.String()
-			r.Log.V(1).Info("Nmap scan ", "subnet", subnet)
+			log.Info("Nmap scan ", "subnet", subnet)
 
 			if IpVersion(subnet) == "ipv4" {
-				res := nmapScan(subnet, ctx)
+				res := nmapScan(subnet, ctx, log)
 
 				for hostidx := range res {
 					host := &res[hostidx]
 					res, err := toNetdataMap(host, subnet)
 					if err == nil {
-						r.Log.V(1).Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+						log.Info("Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
 						ch <- res
-						r.Log.V(1).Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
+						log.Info("added to channel Host", "ipv4 is", host.Addresses[0], " mac is ", host.Addresses[1])
 					}
 				}
 			} else {
-				r.Log.V(1).Info("Skip nmap scanning for ipv6", "subnet", subnet)
+				log.Info("Skip nmap scanning for ipv6", "subnet", subnet)
 			}
 		}
 	}
@@ -663,11 +653,12 @@ func nmapProcess(c *netdataconf, r *NetdataReconciler, ctx context.Context, ch c
 // +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ipam.onmetal.de/v1alpha1,resources=subnet/status,verbs=get
 func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = r.Log.WithValues("netdata", req.NamespacedName)
+	log := r.Log.WithValues("netdata", req.NamespacedName)
 	var subnet ipamv1alpha1.Subnet
 	err := r.Get(ctx, req.NamespacedName, &subnet)
 	if err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get Subnet: %v", err))
+		log.Error(err, "requested subnet resource not found")
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if subnet.ObjectMeta.Name == "" {
 		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get subnet.ObjectMeta.Name: %v", err))
@@ -675,62 +666,60 @@ func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// get configmap data
 	var c netdataconf
-	c.getConf(r)
+	c.getConf(r, log)
 
 	// Skip subnets which do not have required label. e.g labelsubnet = oob
 	val, ok := subnet.Labels["labelsubnet"]
 	if !ok || val != c.SubnetLabel["labelsubnet"] {
 		errString := fmt.Sprintf("Not reconciling as Labelsubnet do not match for subnet : %v", subnet.ObjectMeta.Name)
-		log.Print(errString)
-		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf(errString))
+		log.Info(errString)
+		return ctrl.Result{}, fmt.Errorf(errString)
 	}
 
-	log.Printf("Started reconciling for subnet : %v", subnet.ObjectMeta.Name)
+	log.Info("Started reconciling for subnet", "subnet", subnet.ObjectMeta.Name)
 
 	netSource := os.Getenv("NETSOURCE")
 	switch netSource {
 	case "nmap":
 		ch := make(chan NetdataMap, 1000)
 		mergeRes := make(NetdataMap)
-		r.Log.V(1).Info("\nMergeRes init state.", "mergeRes", mergeRes)
-
+		log.Info("\nMergeRes init state.", "mergeRes", mergeRes)
 		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
 		doOnce.Do(func() {
-			log.Print("Starting IP Cleaner...")
-			go IPCleaner(ctx, &c, "nmap")
+			log.Info("Starting IP Cleaner...")
+			go IPCleaner(ctx, &c, "nmap", log)
 		})
 
 		wg := sync.WaitGroup{}
 
 		wg.Add(1)
-		go nmapProcess(&c, r, ctx, ch, &wg)
-		fmt.Printf("\nStarted nmap \n")
+		go nmapProcess(&c, r, ctx, ch, &wg, log)
+		log.Info("\nStarted nmap \n")
 
 		wg.Wait()
-		r.Log.V(1).Info("\nWg ended \n")
+		log.Info("\nWg ended \n")
 		close(ch)
-		r.Log.V(1).Info("\nch closed \n")
+		log.Info("\nch closed \n")
 
 		for entity := range ch {
 			for k, v := range entity {
-				r.Log.V(1).Info("\ntest 1  mergeRes = %+v \n", mergeRes)
-				r.Log.V(1).Info("\ntest 1  k = %+v \n", k)
-				r.Log.V(1).Info("\ntest 1  v = %+v \n", v)
+				log.Info("\ntest 1  mergeRes = %+v \n", mergeRes)
+				log.Info("\ntest 1  k = %+v \n", k)
+				log.Info("\ntest 1  v = %+v \n", v)
 				mergeRes.add2map(k, v)
-				r.Log.V(1).Info("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
+				log.Info("\ntest 2 should change  mergeRes = %+v \n", mergeRes)
 			}
 		}
 
 		for _, mv := range mergeRes {
-			createNetCRD(mv, &c, ctx, &subnet)
+			createNetCRD(mv, &c, ctx, &subnet, log)
 		}
 
 	case "netlink":
 		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
 		doOnce.Do(func() {
-			log.Print("Starting IP Cleaner...")
-
-			go IPCleaner(ctx, &c, "netlink")
+			log.Info("Starting IP Cleaner...")
+			go IPCleaner(ctx, &c, "netlink", log)
 		})
 
 		// We only create netlink listener per subnet, so ignore multiple reconcile for a subnet
@@ -742,19 +731,19 @@ func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 			SubnetNetlinkListener[subnet.ObjectMeta.Name] = nil
 			mu.Unlock()
 			chNetlink := make(chan NetdataMap, 1000)
-			go NetlinkListener(context.Background(), chNetlink, &c, &subnet)
-			go NetlinkProcessor(context.Background(), chNetlink, &c, &subnet)
+			go NetlinkListener(context.Background(), chNetlink, &c, &subnet, log)
+			go NetlinkProcessor(context.Background(), chNetlink, &c, &subnet, log)
 		} else {
 			// Netlink listener is already created and you are here again for subnet deletion, stop the listener.
 			if subnet.GetDeletionTimestamp() != nil && ch != nil {
-				log.Printf("got a delete subnet request")
+				log.Info("Received delete subnet request")
 				close(ch)
 				delete(SubnetNetlinkListener, subnet.ObjectMeta.Name)
 			}
 		}
 
 	default:
-		fmt.Printf("\nRequire define proper NETSOURCE environment variable. current NETSOURCE is +%v \n", netSource)
+		log.Error(fmt.Errorf("Require define proper NETSOURCE environment variable. current NETSOURCE is +%v", netSource), "error", "env")
 		os.Exit(11)
 	}
 	return ctrl.Result{}, nil
