@@ -658,7 +658,7 @@ func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 	err := r.Get(ctx, req.NamespacedName, &subnet)
 	if err != nil {
 		log.Error(err, "requested subnet resource not found")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get Subnet: %v", err))
 	}
 	if subnet.ObjectMeta.Name == "" {
 		return ctrl.Result{}, client.IgnoreNotFound(fmt.Errorf("cannot get subnet.ObjectMeta.Name: %v", err))
