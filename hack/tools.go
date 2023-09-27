@@ -22,4 +22,5 @@ package tools
 import (
 	// Use addlicense for adding license headers.
 	_ "github.com/google/addlicense"
+	_ "sigs.k8s.io/controller-runtime/tools/setup-envtest"
 )
