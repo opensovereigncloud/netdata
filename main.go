@@ -97,6 +97,12 @@ func main() {
 
 	syncPeriod, _ := time.ParseDuration(getenv("RECONCILETIMEOUT", "360s"))
 
+	var cacheDefaultNamespaces map[string]cache.Config
+	if ns != "" {
+		cacheDefaultNamespaces = map[string]cache.Config{
+			ns: {},
+		}
+	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -105,10 +111,8 @@ func main() {
 		LeaderElection:   enableLeaderElection,
 		LeaderElectionID: "d0afb540.onmetal.de",
 		Cache: cache.Options{
-			SyncPeriod: &(syncPeriod),
-			DefaultNamespaces: map[string]cache.Config{
-				ns: {},
-			},
+			SyncPeriod:        &(syncPeriod),
+			DefaultNamespaces: cacheDefaultNamespaces,
 		},
 	})
 	if err != nil {
