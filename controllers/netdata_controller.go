@@ -41,7 +41,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/vishvananda/netlink"
 
 	"github.com/go-logr/logr"
 	yaml "gopkg.in/yaml.v2"
@@ -59,7 +58,6 @@ import (
 
 	ipamv1alpha1 "github.com/onmetal/ipam/api/v1alpha1"
 	ping "github.com/prometheus-community/pro-bing"
-	"golang.org/x/sys/unix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -67,7 +65,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-var SubnetNetlinkListener = make(map[string]chan struct{})
 var doOnce sync.Once
 
 // NetdataMap is resulted map of discovered hosts
@@ -319,30 +316,6 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipa
 	}
 }
 
-func CheckIPFromNetlinkAndKea(ips *ipamv1alpha1.IPList, ctx context.Context, ip v1alpha1.IP) string {
-	// If two IP objects exist one from kea and another from netlink, this function will return netlink IP for deletion
-
-	m := make(map[string]string)
-
-	for _, existedIP := range ips.Items {
-		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
-			if existedIP.ObjectMeta.Labels["origin"] == "kea" {
-				m["kea"] = existedIP.ObjectMeta.Name
-			}
-			if existedIP.ObjectMeta.Labels["origin"] == "netlink" {
-				m["netlink"] = existedIP.ObjectMeta.Name
-			}
-		}
-	}
-
-	if val, ok := m["netlink"]; ok {
-		if _, ok := m["kea"]; ok {
-			return val
-		}
-	}
-	return ""
-}
-
 func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool, log logr.Logger) {
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS := make(map[string]string)
@@ -353,21 +326,6 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 		Limit:         100,
 	}
 	ipsList, _ := client.List(ctx, ipsListOptions)
-
-	// Special case: If an IP object exists from both kea and Netlink then delete Netlink IP
-	if os.Getenv("NETSOURCE") == "netlink" {
-		deleteIP := CheckIPFromNetlinkAndKea(ipsList, ctx, ip)
-		if deleteIP != "" {
-			*createNewIP = false // do not create new IP from Netlink
-			err := client.Delete(ctx, deleteIP, v1.DeleteOptions{})
-			if err != nil {
-				log.Error(err, "error in deleting ip : "+deleteIP)
-			} else {
-				log.Info(fmt.Sprintf("Same IP object exists from kea and Netlink, Deleted IP object: %s", deleteIP))
-			}
-			return
-		}
-	}
 
 	for _, existedIP := range ipsList.Items {
 		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
@@ -518,79 +476,6 @@ func getIps(origin string, log logr.Logger) []v1alpha1.IP {
 	return ipList.Items
 }
 
-func NetlinkProcessor(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
-	log.Info(fmt.Sprintf("starting netlink processor for subnet %s", subnet.Name))
-
-	for entity := range ch {
-		for _, v := range entity {
-			createNetCRD(v, conf, ctx, subnet, log)
-		}
-	}
-	log.Info("netlink processor ended")
-
-}
-
-func NetlinkListener(ctx context.Context, ch chan NetdataMap, conf *netdataconf, subnet *ipamv1alpha1.Subnet, log logr.Logger) {
-	log.Info(fmt.Sprintf("starting netlink listener for subnet %s", subnet.Name))
-
-	chNetlink := make(chan netlink.NeighUpdate)
-	done := make(chan struct{})
-	if err := netlink.NeighSubscribe(chNetlink, done); err != nil {
-		log.Error(err, "Netlink listener subscription failed")
-		return
-	}
-
-	// If we already have a netlink listener running for a subnet, do not create new listener
-	val, ok := SubnetNetlinkListener[subnet.ObjectMeta.Name]
-	if ok && (val != nil) {
-		close(done)
-		close(ch)
-		return
-	}
-
-	// Store netlink listner subnet name and closing channel
-	SubnetNetlinkListener[subnet.Name] = done
-
-	for data := range chNetlink {
-
-		// Ignore IPs from different subnet
-		ip := data.Neigh.IP.String()
-		mac := data.Neigh.HardwareAddr.String()
-
-		if subnet.Spec.CIDR != nil {
-			subnetAddr := subnet.Spec.CIDR.String()
-			_, subnetnetA, _ := net.ParseCIDR(subnetAddr)
-			ipcur := net.ParseIP(ip)
-			if !subnetnetA.Contains(ipcur) {
-				continue
-			}
-		}
-		// Ignore empty IP || empty MAC || IPv4 || link local address
-		if ip == "::" || mac == "" || (IpVersion(ip) == "ipv4") || strings.HasPrefix(ip, "fe80") {
-			continue
-		}
-
-		// Ignore RTM_NEWNEIGH entries with States PROBE, STALE, INCOMPLETE, FAILED stc.
-		if (data.Type == unix.RTM_NEWNEIGH) && (data.Neigh.State != netlink.NUD_REACHABLE) {
-			continue
-		}
-
-		// Prepare netDataMap and send on the channel
-		m := make(NetdataMap)
-
-		//inflate short IP addresses
-		if strings.Contains(ip, "::") {
-			i := net.ParseIP(ip)
-			ip = FullIPv6(i)
-		}
-
-		m[mac] = newNetdataSpec(mac, ip, "", "ipv6")
-		ch <- m
-	}
-	close(ch)
-	log.Info("Netlink listener ended")
-}
-
 func IpVersion(s string) string {
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
@@ -714,34 +599,6 @@ func (r *NetdataReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 		for _, mv := range mergeRes {
 			createNetCRD(mv, &c, ctx, &subnet, log)
 		}
-
-	case "netlink":
-		// Start IP Cleaner go routine, this will be executed only once and it will run forever.
-		doOnce.Do(func() {
-			log.Info("Starting IP Cleaner...")
-			go IPCleaner(ctx, &c, "netlink", log)
-		})
-
-		// We only create netlink listener per subnet, so ignore multiple reconcile for a subnet
-		ch, ok := SubnetNetlinkListener[subnet.ObjectMeta.Name]
-		if !ok {
-			// Apply lock to avoid race condition as you may get multiple requests for a subnet
-			var mu sync.Mutex
-			mu.Lock()
-			SubnetNetlinkListener[subnet.ObjectMeta.Name] = nil
-			mu.Unlock()
-			chNetlink := make(chan NetdataMap, 1000)
-			go NetlinkListener(context.Background(), chNetlink, &c, &subnet, log)
-			go NetlinkProcessor(context.Background(), chNetlink, &c, &subnet, log)
-		} else {
-			// Netlink listener is already created and you are here again for subnet deletion, stop the listener.
-			if subnet.GetDeletionTimestamp() != nil && ch != nil {
-				log.Info("Received delete subnet request")
-				close(ch)
-				delete(SubnetNetlinkListener, subnet.ObjectMeta.Name)
-			}
-		}
-
 	default:
 		log.Error(fmt.Errorf("Require define proper NETSOURCE environment variable. current NETSOURCE is +%v", netSource), "error", "env")
 		os.Exit(11)

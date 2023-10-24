@@ -3,20 +3,13 @@
 [![GitHub License](https://img.shields.io/static/v1?label=License&message=Apache-2.0&color=blue&style=flat-square)](LICENSE)
 
 ## Overview
-The Netdata operator keeps a watch over subnets and scans or discovers the servers from the network by using two different ways NMAP and Netlink.
+The Netdata operator keeps a watch over subnets and scans or discovers the servers from the network by using NMAP protocol.
 
 ### NMAP
 1. The Netdata operator scans for IPv4 addresses and creates the ip objects in the Kubernetes cluster.
 
-### Netlink 
-1. The Netdata operator reconciles on subnets. When the reconcile loop gets an update for a subnet, the process creates two go routines Netlink Processor and Netlink Listner.
-2. For every event sent by Netlink, The Netlink Listener captures it and extracts the required data and sends it further to the Netlink Processor. The Netlink Processer then creates the IP object.
-3. Every subnet will have a pair of go routine Netlink listener and Netlink processor to capture the IPv6 event.
-4. When the subnet is deleted, the Netlink process also stops the go routines.
-5. The Netada operator creates ip objects with two important labels ip address and the mac of the server. The IP and MAC info is further consumed by the oob-operator.
-
 ### IP object Cleanup process
-1. A cron job is created for NMAP/Netlink process, this cron job runs for infinite time, in a single iteration all the IP objects are fetched from the k8s cluster.
+1. A cron job is created for NMAP process, this cron job runs for infinite time, in a single iteration all the IP objects are fetched from the k8s cluster.
 2. A Cron job will run on all IP objects fetched, it will try to ping the IP address. If the IP address is not reachable, it gets deleted after the retry mechanism.
 3. Once the single iteration is completed the cron job will pause its execution for the TTL configured from the config map.
 
