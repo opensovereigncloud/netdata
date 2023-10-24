@@ -67,6 +67,10 @@ import (
 
 var doOnce sync.Once
 
+var ipLocalCache = make(map[string]time.Time)
+var mu sync.Mutex
+var delMu sync.Mutex
+
 // NetdataMap is resulted map of discovered hosts
 type NetdataSpec struct {
 	Addresses  []IPsubnet
@@ -259,10 +263,23 @@ func kubeconfigCreate(log logr.Logger) *rest.Config {
 
 func IPCleaner(ctx context.Context, c *netdataconf, origin string, log logr.Logger) {
 
+	// Initially fill the cache with expired time, this will ensure to ping all IPs in first run
+	ips := getIps(origin, log)
+	expiredTime := time.Now().Add(-(time.Second * time.Duration(c.TTL) * 2))
+	for _, ip := range ips {
+		ipLocalCache[ip.Spec.IP.String()] = expiredTime
+	}
+
 	for {
 		ips := getIps(origin, log)
 		for _, ip := range ips {
 			ipAddress := ip.Spec.IP.String()
+
+			// If the IP is seen 90% TTL then do not ping it
+			lastSeen := time.Since(ipLocalCache[ipAddress]).Seconds()
+			if lastSeen < float64(c.TTL)*0.9 {
+				continue
+			}
 
 			pinger, err := ping.NewPinger(ipAddress)
 			if err != nil {
@@ -281,7 +298,12 @@ func IPCleaner(ctx context.Context, c *netdataconf, origin string, log logr.Logg
 				err = pinger.Run()
 				if err != nil || pinger.PacketsRecv == 0 {
 					log.Info(fmt.Sprintf("IP Cleaner ping failed, deleting IP object: %s", ip.ObjectMeta.Name))
-					deleteIP(ctx, &ip, log)
+					err := deleteIP(ctx, &ip, log)
+					if err == nil {
+						delMu.Lock()
+						delete(ipLocalCache, ipAddress)
+						delMu.Unlock()
+					}
 				}
 			}
 		}
@@ -314,6 +336,10 @@ func createIPAM(c *netdataconf, ctx context.Context, ip v1alpha1.IP, subnet *ipa
 		log.Info(fmt.Sprintf("Created IP object: %s \n", createdIP.ObjectMeta.Name))
 
 	}
+	// update timestamp in the local cache
+	mu.Lock()
+	ipLocalCache[ip.Spec.IP.String()] = time.Now()
+	mu.Unlock()
 }
 
 func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool, log logr.Logger) {
@@ -449,7 +475,7 @@ func (mergeRes NetdataMap) addIP2Res(k string, v NetdataSpec) {
 	}
 }
 
-func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) {
+func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) error {
 	kubeconfig := kubeconfigCreate(log)
 	cs, _ := clientset.NewForConfig(kubeconfig)
 	client := cs.IpamV1Alpha1().IPs(ip.ObjectMeta.Namespace)
@@ -459,6 +485,7 @@ func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) {
 	} else {
 		log.Info(fmt.Sprintf("deleted IP  %s", ip.ObjectMeta.Name))
 	}
+	return err
 }
 
 func getIps(origin string, log logr.Logger) []v1alpha1.IP {
