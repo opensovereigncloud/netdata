@@ -6,7 +6,7 @@ require (
 	github.com/Ullaakut/nmap/v2 v2.2.2
 	github.com/go-logr/logr v1.3.0
 	github.com/google/addlicense v1.1.1
-	github.com/onmetal/ipam v0.0.25
+	github.com/onmetal/ipam v0.0.26
 	github.com/onsi/ginkgo/v2 v2.13.0
 	github.com/onsi/gomega v1.29.0
 	github.com/pkg/errors v0.9.1
