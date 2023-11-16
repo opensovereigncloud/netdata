@@ -12,9 +12,9 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus-community/pro-bing v0.3.0
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.28.3
+	k8s.io/api v0.28.4
 	k8s.io/apimachinery v0.28.4
-	k8s.io/client-go v0.28.3
+	k8s.io/client-go v0.28.4
 	k8s.io/klog/v2 v2.110.1
 	sigs.k8s.io/controller-runtime v0.16.3
 	sigs.k8s.io/controller-runtime/tools/setup-envtest v0.0.0-20230926180527-c93e2abcb28e
