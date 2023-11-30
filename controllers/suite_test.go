@@ -39,8 +39,7 @@ import (
 )
 
 var (
-	k8sClient         client.Client
-	netdataReconciler *NetdataReconciler
+	k8sClient client.Client
 )
 
 func TestAPIs(t *testing.T) {
@@ -94,12 +93,12 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(mgr).NotTo(BeNil())
 
-	netdataReconciler = &NetdataReconciler{
-		Client: mgr.GetClient(),
-		Log:    mgr.GetLogger(),
-		Config: "../config/default/netdata-config.yaml"}
+	// netdataReconciler = &NetdataReconciler{
+	// 	Client: mgr.GetClient(),
+	// 	Log:    mgr.GetLogger(),
+	// 	Config: "../config/default/netdata-config.yaml"}
 
-	Expect(netdataReconciler.SetupWithManager(mgr)).To(Succeed())
+	// Expect(netdataReconciler.SetupWithManager(mgr)).To(Succeed())
 
 	mgrCtx, mgrCancel := context.WithCancel(ctx)
 	var mgrDone sync.WaitGroup

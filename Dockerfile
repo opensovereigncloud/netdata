@@ -42,5 +42,6 @@ RUN apk -U upgrade && apk add --no-cache \
     && rm -rf /var/cache/apk/*
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY nmap-ipv6-multicast-echo.nse nmap-ipv6-multicast-echo.nse
 USER $USER:$USER
 ENTRYPOINT ["/manager"]
