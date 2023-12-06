@@ -3,15 +3,21 @@
 [![GitHub License](https://img.shields.io/static/v1?label=License&message=Apache-2.0&color=blue&style=flat-square)](LICENSE)
 
 ## Overview
-The Netdata operator keeps a watch over subnets and scans or discovers the servers from the network by using NMAP protocol.
+The Netdata is an utility which scans or discovers the servers from the network by using NMAP protocol
 
-### NMAP
-1. The Netdata operator scans for IPv4 addresses and creates the ip objects in the Kubernetes cluster.
+### Subnet scan cron job
+1. In this cron job all subnets are fetched and scanned parallelly.
+2. The IPv4 subnet is scanned using ![golang nmap library](https://github.com/Ullaakut/nmap)
+3. The IPv6 subnet is scanned using the golang lib and a .nse script file present in the repository.
+4. Each NMAP scan is executed in parallel using go routines.
+5. The output received from a scan is processed to get the IP and MAC. Using an IP address and a MAC an IP object is created.
+6. The cron job is executed periodically using the configured interval from the config map.
 
-### IP object Cleanup process
-1. A cron job is created for NMAP process, this cron job runs for infinite time, in a single iteration all the IP objects are fetched from the k8s cluster.
-2. A Cron job will run on all IP objects fetched, it will try to ping the IP address. If the IP address is not reachable, it gets deleted after the retry mechanism.
-3. Once the single iteration is completed the cron job will pause its execution for the TTL configured from the config map.
+### IP object Cleanup cron job
+1. In this cron job all IP objects are fetched from the k8s cluster.
+2. From the IP object an IP address is parsed and it is pinged. If the IP address is not reachable, it gets deleted after the retry mechanism.
+3. Nothing is done if the ping is successful.
+3. The cron job is executed periodically using the configured interval from the config map.
 
 #### Workflow
 
