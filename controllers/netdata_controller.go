@@ -195,6 +195,13 @@ func nmapScanIPv6(ch chan hostData, subnetName string, wg *sync.WaitGroup, inter
 		if len(host.Addresses) == 2 {
 			hostdata.mac = host.Addresses[1].Addr
 			hostdata.ip = host.Addresses[0].Addr
+
+			//inflate short IP addresses
+			if strings.Contains(host.Addresses[0].Addr, "::") {
+				i := net.ParseIP(host.Addresses[0].Addr)
+				hostdata.ip = FullIPv6(i)
+			}
+
 			hostdata.subnetName = subnetName
 			ch <- hostdata
 		} else {
