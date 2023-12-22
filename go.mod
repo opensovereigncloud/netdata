@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/Ullaakut/nmap/v2 v2.2.2
-	github.com/go-logr/logr v1.4.0
+	github.com/go-logr/logr v1.4.1
 	github.com/google/addlicense v1.1.1
 	github.com/onmetal/ipam v0.0.26
 	github.com/onsi/ginkgo/v2 v2.13.2
