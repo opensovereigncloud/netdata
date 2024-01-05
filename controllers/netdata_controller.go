@@ -71,7 +71,6 @@ var (
 	kubeconfig = kubeconfigCreate(Log)
 )
 
-// NetdataMap is resulted map of discovered hosts
 type hostData struct {
 	ip         string
 	mac        string
@@ -79,7 +78,6 @@ type hostData struct {
 }
 
 type netdataconf struct {
-	Interval    int               `yaml:"interval"`
 	TTL         int               `yaml:"ttl"`
 	IPNamespace string            `default:"default" yaml:"ipnamespace"`
 	SubnetLabel map[string]string `yaml:"subnetLabelSelector"`
@@ -96,8 +94,6 @@ func (c *netdataconf) getConf(log logr.Logger) *netdataconf {
 	if err != nil {
 		log.Error(err, "Unmarshal error")
 	}
-	c.validate(log)
-
 	return c
 }
 
@@ -113,18 +109,6 @@ func (c *netdataconf) getSubnets(log logr.Logger) *v1alpha1.SubnetList {
 	}
 	subnetList, _ := clientSubnet.List(context.Background(), subnetListOptions)
 	return subnetList
-}
-
-func (c *netdataconf) validate(log logr.Logger) {
-	c.validateInterval(log)
-}
-
-// TTL > Interval
-func (c *netdataconf) validateInterval(log logr.Logger) {
-	if c.TTL < c.Interval {
-		log.Error(fmt.Errorf("wrong ttl < interval"), "error")
-		os.Exit(20)
-	}
 }
 
 func nmapScan(ch chan hostData, subnetName string, wg *sync.WaitGroup, ctx context.Context, log logr.Logger) {
