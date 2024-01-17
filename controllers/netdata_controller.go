@@ -242,6 +242,7 @@ func ipCleanerCronJob(c *netdataconf, ctx context.Context, origin string, log lo
 				continue
 			}
 
+			pinger.SetPrivileged(true)
 			pinger.Count = 3
 			pinger.Timeout = time.Second * 5
 			err = pinger.Run()
@@ -252,6 +253,7 @@ func ipCleanerCronJob(c *netdataconf, ctx context.Context, origin string, log lo
 				time.Sleep(time.Second * 5)
 				err = pinger.Run()
 				if err != nil || pinger.PacketsRecv == 0 {
+					log.Info(err.Error())
 					log.Info(fmt.Sprintf("IP Cleaner ping failed, deleting IP object: %s", ip.ObjectMeta.Name))
 					err := deleteIP(ctx, &ip, log)
 					if err == nil {
