@@ -6,18 +6,21 @@
 The Netdata is an utility which scans or discovers the servers from the network by using NMAP protocol
 
 ### Subnet scan cron job
-1. In this cron job all subnets are fetched and scanned parallelly.
+1. In this cron job specific subnets are fetched which are having label 'labelsubnet'.
 2. The IPv4 subnet is scanned using ![golang nmap library](https://github.com/Ullaakut/nmap)
-3. The IPv6 subnet is scanned using the golang lib and a .nse script file present in the repository.
-4. Each NMAP scan is executed in parallel using go routines.
-5. The output received from a scan is processed to get the IP and MAC. Using an IP address and a MAC an IP object is created.
-6. The cron job is executed periodically using the configured interval from the config map.
+3. The IPv6 subnet is scanned using ![golang nmap library](https://github.com/Ullaakut/nmap) and a .nse script file present in the repository.
+4. All NMAP scans are executed in parallel using go routines.
+5. The output received from a scan is processed to get the IP and MAC.
+6. IP and MAC address got received from the NMAP scan is used to create the IP objects.
+7. The cron job is executed periodically using the configured interval from the config map.
 
 ### IP object Cleanup cron job
 1. In this cron job all IP objects are fetched from the k8s cluster.
-2. From the IP object an IP address is parsed and it is pinged. If the IP address is not reachable, it gets deleted after the retry mechanism.
-3. Nothing is done if the ping is successful.
-3. The cron job is executed periodically using the configured interval from the config map.
+2. Netdata maintains the local cache which holds the lastseen timestamp of IP objects.
+3. The pinger will only ping the IP object if the lastseen timestamp does not fall within the required range.
+4. If the ping is successful, it means the device is healty and we dont have to clean the IP object.
+5. If the IP address is not reachable, it gets deleted after the retry mechanism.
+6. The cron job is executed periodically using the configured interval from the config map.
 
 #### Workflow
 
