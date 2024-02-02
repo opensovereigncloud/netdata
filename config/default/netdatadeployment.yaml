@@ -1,9 +1,4 @@
 ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: sa
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,7 +17,7 @@ spec:
       - name: netdata-config
         configMap:
           name: config
-      serviceAccountName: sa
+      serviceAccountName: netdata-sa
       securityContext:
         {}
       hostNetwork: true
@@ -42,11 +37,6 @@ spec:
               - NET_BIND_SERVICE
           image: "netdata-ipam:latest"
           imagePullPolicy: Always
-          env:
-          - name: NETSOURCE
-            value: "nmap"
-          - name: RECONCILETIMEOUT
-            value: "600s"
           resources:
             limits:
               cpu: 200m

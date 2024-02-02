@@ -22,10 +22,3 @@ configMapGenerator:
 
 configurations:
   - nameReference.yaml
-
-patches:
-- path: patch-service-account.yaml
-  target:
-    kind: ClusterRoleBinding
-
-# TODO use current namespace if not defined
