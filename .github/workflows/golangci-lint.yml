@@ -19,7 +19,7 @@ jobs:
     - run: hack/setup-git-redirect.sh
       env:
         GITHUB_PAT: ${{ secrets.BOT_PAT }}
-    - uses: golangci/golangci-lint-action@v3
+    - uses: golangci/golangci-lint-action@v4
       with:
         version: v1.55.2
         args: --timeout 15m
