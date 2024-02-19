@@ -72,9 +72,9 @@ var (
 )
 
 type hostData struct {
-	ip         string
-	mac        string
-	subnetName string
+	ip     string
+	mac    string
+	subnet *v1alpha1.Subnet
 }
 
 type netdataconf struct {
@@ -111,10 +111,10 @@ func (c *netdataconf) getSubnets(log logr.Logger) *v1alpha1.SubnetList {
 	return subnetList
 }
 
-func nmapScan(ch chan hostData, subnetName string, wg *sync.WaitGroup, ctx context.Context, log logr.Logger) {
+func nmapScan(ch chan hostData, subnet v1alpha1.Subnet, wg *sync.WaitGroup, ctx context.Context, log logr.Logger) {
 	defer wg.Done()
 	scanner, err := nmap.NewScanner(
-		nmap.WithTargets(subnetName),
+		nmap.WithTargets(subnet.Spec.CIDR.String()),
 		nmap.WithPingScan(),
 		nmap.WithPrivileged(),
 		nmap.WithContext(ctx),
@@ -137,7 +137,7 @@ func nmapScan(ch chan hostData, subnetName string, wg *sync.WaitGroup, ctx conte
 		if len(host.Addresses) == 2 {
 			hostdata.mac = host.Addresses[1].Addr
 			hostdata.ip = host.Addresses[0].Addr
-			hostdata.subnetName = subnetName
+			hostdata.subnet = subnet.DeepCopy()
 			ch <- hostdata
 		} else {
 			log.Info("mac not found", "host", host.Addresses)
@@ -145,7 +145,7 @@ func nmapScan(ch chan hostData, subnetName string, wg *sync.WaitGroup, ctx conte
 	}
 }
 
-func nmapScanIPv6(ch chan hostData, subnetName string, wg *sync.WaitGroup, interfaceName string, interfaceAddress string, ctx context.Context, log logr.Logger) {
+func nmapScanIPv6(ch chan hostData, subnet v1alpha1.Subnet, wg *sync.WaitGroup, interfaceName string, interfaceAddress string, ctx context.Context, log logr.Logger) {
 
 	defer wg.Done()
 
@@ -186,7 +186,7 @@ func nmapScanIPv6(ch chan hostData, subnetName string, wg *sync.WaitGroup, inter
 				hostdata.ip = FullIPv6(i)
 			}
 
-			hostdata.subnetName = subnetName
+			hostdata.subnet = subnet.DeepCopy()
 			ch <- hostdata
 		} else {
 			log.Info("mac not found", "host", host.Addresses)
@@ -338,7 +338,7 @@ func createIP(hostdata hostData, conf *netdataconf, ctx context.Context, log log
 		},
 		Spec: v1alpha1.IPSpec{
 			Subnet: corev1.LocalObjectReference{
-				Name: hostdata.subnetName,
+				Name: hostdata.subnet.Name,
 			},
 			IP: ipaddr,
 		},
@@ -351,8 +351,10 @@ func createIP(hostdata hostData, conf *netdataconf, ctx context.Context, log log
 	handleDuplicateIPs(ctx, *ip, client, &createNewIP, log)
 
 	if createNewIP {
-		ref := v1.OwnerReference{Name: "netdata.onmetal.de/ip", APIVersion: "v1", Kind: "ip", UID: "ip"}
-		ip.OwnerReferences = append(ip.OwnerReferences, ref)
+		ip.SetOwnerReferences([]metav1.OwnerReference{
+			*metav1.NewControllerRef(hostdata.subnet, hostdata.subnet.GroupVersionKind()),
+		})
+
 		createdIP, err := client.Create(ctx, ip, v1.CreateOptions{})
 		if err != nil {
 			log.Error(err, "Create IP error")
@@ -427,10 +429,10 @@ func subnetScanCronjob(c *netdataconf, ctx context.Context, ch chan hostData, lo
 
 			if IpVersion(subnet) == "ipv4" {
 				wg.Add(1)
-				go nmapScan(ch, subnet, &wg, ctx, log)
+				go nmapScan(ch, subi, &wg, ctx, log)
 			} else {
 				wg.Add(1)
-				go nmapScanIPv6(ch, subnet, &wg, interfaceName, ipAddress, ctx, log)
+				go nmapScanIPv6(ch, subi, &wg, interfaceName, ipAddress, ctx, log)
 			}
 		}
 		wg.Wait()
