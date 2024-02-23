@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: netdata-role
+  name: role
 rules:
   - apiGroups:
       - ipam.onmetal.de

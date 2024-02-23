@@ -4,7 +4,7 @@ kind: Deployment
 metadata:
   annotations:
     configmap.reloader.stakater.com/reload: "config"
-  name: netdata
+  name: controller
 spec:
   replicas: 1
   selector:

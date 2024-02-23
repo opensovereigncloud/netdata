@@ -10,6 +10,7 @@ bases:
 - netdatadeployment.yaml
 - rbac.yaml
 - clusterrb.yaml
+- service_account.yaml
 
 configMapGenerator:
 - name: config
