@@ -1,4 +1,4 @@
-module github.com/onmetal/netdata
+module github.com/ironcore-dev/netdata
 
 go 1.21
 

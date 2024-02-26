@@ -7,8 +7,8 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/ironcore-dev/netdata/controllers"
 	"github.com/onmetal/ipam/api/v1alpha1"
-	"github.com/onmetal/netdata/controllers"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
