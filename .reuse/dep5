@@ -1,0 +1,42 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: netdata
+Upstream-Contact: IronCore authors <ospo@sap.com>
+Source: https://github.com/ironcore-dev/netdata
+
+# --------------------------------------------------
+# source code
+
+Files:
+  .github/*
+  .gitignore
+  .golangci.yaml
+  Dockerfile
+  Makefile
+  PROJECT
+  config/*
+  controllers/*
+  go.mod
+  go.sum
+  hack/*
+  test/*
+  netdata_workflow.drawio
+  netdata_workflow.jpg
+  nmap-ipv6-multicast-echo.nse
+Copyright: 2024 SAP SE or an SAP affiliate company and IronCore contributors
+License: Apache-2.0
+
+# --------------------------------------------------
+# documentation
+
+Files:
+  docs/*
+  README.md
+Copyright: 2024 SAP SE or an SAP affiliate company and IronCore contributors
+License: Apache-2.0
+
+# --------------------------------------------------
+# source dependencies
+
+Files: utils/envtest/internal/testing/certs/certs.go
+Copyright: 2021 The Kubernetes Authors.
+License: Apache-2.0
