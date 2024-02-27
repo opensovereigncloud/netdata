@@ -1,4 +1,5 @@
 # netdata
+[![REUSE status](https://api.reuse.software/badge/github.com/ironcore-dev/netdata)](https://api.reuse.software/info/github.com/ironcore-dev/netdata)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com) 
 [![GitHub License](https://img.shields.io/static/v1?label=License&message=Apache-2.0&color=blue&style=flat-square)](LICENSE)
 
