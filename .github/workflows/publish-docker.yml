@@ -17,6 +17,10 @@ on:
     - 'docs/**'
     - '**/*.md'
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   buildAndPush:
     runs-on: ubuntu-latest
