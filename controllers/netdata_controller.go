@@ -22,9 +22,9 @@ import (
 
 	nmap "github.com/Ullaakut/nmap/v2"
 
-	"github.com/onmetal/ipam/api/v1alpha1"
-	"github.com/onmetal/ipam/clientset"
-	clienta1 "github.com/onmetal/ipam/clientset/v1alpha1"
+	"github.com/ironcore-dev/ipam/api/ipam/v1alpha1"
+	"github.com/ironcore-dev/ipam/clientset"
+	clienta1 "github.com/ironcore-dev/ipam/clientset/v1alpha1"
 
 	ping "github.com/prometheus-community/pro-bing"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
