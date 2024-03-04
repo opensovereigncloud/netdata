@@ -64,7 +64,7 @@ addlicense: ## Add license headers to all go files.
 
 .PHONY: checklicense
 checklicense: ## Check that every file has a license header present.
-	find . -name '*.go' -exec go run github.com/google/addlicense  -check -c 'OnMetal authors' {} +
+	find . -name '*.go' -exec go run github.com/google/addlicense  -check -c 'IronCore authors' {} +
 
 lint: ## Run golangci-lint against code.
 	golangci-lint run ./...

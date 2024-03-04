@@ -1,7 +1,7 @@
-domain: onmetal.de
+domain: ironcore.dev
 repo: netdata
 resources:
-- group: machine.onmetal.de
+- group: machines.metal.ironcore.dev
   kind: Netdata
   version: v1
 version: "2"
