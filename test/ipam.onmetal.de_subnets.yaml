@@ -5,9 +5,9 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.11.1
   creationTimestamp: null
-  name: subnets.ipam.ironcore.dev
+  name: subnets.ipam.metal.ironcore.dev
 spec:
-  group: ipam.ironcore.dev
+  group: ipam.metal.ironcore.dev
   names:
     kind: Subnet
     listKind: SubnetList

@@ -5,7 +5,7 @@ metadata:
   name: role
 rules:
   - apiGroups:
-      - ipam.ironcore.dev
+      - ipam.metal.ironcore.dev
     resources:
       - subnets
       - ips
