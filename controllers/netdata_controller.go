@@ -23,6 +23,8 @@ import (
 	nmap "github.com/Ullaakut/nmap/v2"
 
 	"github.com/ironcore-dev/ipam/api/ipam/v1alpha1"
+	ipaminformer "github.com/ironcore-dev/ipam/clientgo/informers"
+	ipam "github.com/ironcore-dev/ipam/clientgo/ipam"
 	"github.com/ironcore-dev/ipam/clientset"
 	clienta1 "github.com/ironcore-dev/ipam/clientset/v1alpha1"
 
@@ -31,13 +33,13 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-var ipLocalCache = make(map[string]time.Time)
-var mu sync.Mutex
-var delMu sync.Mutex
+// IP local cache via informer events
+var ipMap = map[string](*v1alpha1.IP){}
 
 var (
 	Log        = ctrl.Log.WithName("netdata")
@@ -189,26 +191,15 @@ func kubeconfigCreate(log logr.Logger) *rest.Config {
 	return kubeconfig
 }
 
-func ipCleanerCronJob(c *netdataconf, ctx context.Context, origin string, log logr.Logger) {
-	// Initially fill the cache with expired time, this will ensure to ping all IPs in first run
-	ips := getIps(origin, log)
-	expiredTime := time.Now().Add(-(time.Second * time.Duration(c.TTL) * 2))
-	for _, ip := range ips {
-		ipLocalCache[ip.Spec.IP.String()] = expiredTime
-	}
+func ipCleanerCronJob(c *netdataconf, ctx context.Context, log logr.Logger) {
+	CacheInit := make(chan bool)
+
+	go getIpsViaInformer(CacheInit)
+	<-CacheInit // Wait till cache initialised for the first time
 
 	for {
-		ips := getIps(origin, log)
-		for _, ip := range ips {
-
+		for _, ip := range ipMap {
 			ipAddress := ip.Spec.IP.String()
-
-			// If the IP is seen 90% TTL then do not ping it
-			lastSeen := time.Since(ipLocalCache[ipAddress]).Seconds()
-			if lastSeen < float64(c.TTL)*0.9 {
-				continue
-			}
-
 			pinger, err := ping.NewPinger(ipAddress)
 			if err != nil {
 				log.Info(fmt.Sprintf("IP Cleaner Address could not be resolved, IP object: %s", ip.Name)) // no such host, the address cant be resolved
@@ -230,11 +221,9 @@ func ipCleanerCronJob(c *netdataconf, ctx context.Context, origin string, log lo
 					if err != nil {
 						log.Info(err.Error())
 					}
-					err := deleteIP(ctx, &ip, log)
-					if err == nil {
-						delMu.Lock()
-						delete(ipLocalCache, ipAddress)
-						delMu.Unlock()
+					err := deleteIP(ctx, ip, log)
+					if err != nil {
+						log.Info(err.Error())
 					}
 				}
 			}
@@ -337,10 +326,6 @@ func createIP(hostdata hostData, conf *netdataconf, ctx context.Context, log log
 		log.Info(fmt.Sprintf("Created IP : %s", createdIP.ObjectMeta.Name))
 
 	}
-	// update timestamp in the local cache
-	mu.Lock()
-	ipLocalCache[ip.Spec.IP.String()] = time.Now()
-	mu.Unlock()
 }
 
 func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) error {
@@ -353,20 +338,6 @@ func deleteIP(ctx context.Context, ip *v1alpha1.IP, log logr.Logger) error {
 		log.Info(fmt.Sprintf("Deleted IP  %s", ip.ObjectMeta.Name))
 	}
 	return err
-}
-
-func getIps(origin string, log logr.Logger) []v1alpha1.IP {
-	cs, _ := clientset.NewForConfig(kubeconfig)
-	clientip := cs.IpamV1Alpha1().IPs(metav1.NamespaceAll)
-
-	labelsorigin := map[string]string{"origin": origin}
-	labelSelector := metav1.LabelSelector{MatchLabels: labelsorigin}
-	labelListOptions := metav1.ListOptions{
-		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
-		Limit:         1000,
-	}
-	ipList, _ := clientip.List(context.Background(), labelListOptions)
-	return ipList.Items
 }
 
 func IpVersion(s string) string {
@@ -430,6 +401,61 @@ func (c *netdataconf) getNetworkInterface(subnet string, log logr.Logger) (inter
 	return "", ""
 }
 
+func getIpsViaInformer(cacheInit chan bool) {
+	cs, _ := ipam.NewForConfig(kubeconfig)
+	informerFactory := ipaminformer.NewSharedInformerFactory(cs, time.Second*30)
+
+	ipInformer := informerFactory.Ipam().V1alpha1().IPs()
+
+	_, err := ipInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			IP := obj.(*v1alpha1.IP)
+			origin, ok := IP.Labels["origin"]
+			if ok && origin == "nmap" {
+				ipMap[IP.Name] = IP
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			// compare the resource version, if they are different then object is actually updated otherwise its a cache update event and
+			// it can be ignored
+			oldIP := oldObj.(*v1alpha1.IP)
+			newIP := newObj.(*v1alpha1.IP)
+			origin, ok := newIP.Labels["origin"]
+			if ok && origin == "nmap" {
+				if oldIP.ResourceVersion != newIP.ResourceVersion {
+					ipMap[newIP.Name] = newIP
+				}
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			IP := obj.(*v1alpha1.IP)
+			origin, ok := IP.Labels["origin"]
+			if ok && origin == "nmap" {
+				delete(ipMap, IP.Name)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// Start the informer
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	go ipInformer.Informer().Run(stopCh)
+
+	for {
+		if ipInformer.Informer().HasSynced() {
+			cacheInit <- true
+			break
+		}
+		time.Sleep(time.Second * 5)
+	}
+	// Run until interrupted
+	select {}
+}
+
 func Start() {
 	log := Log.WithValues("netdata", "oob")
 	var c netdataconf
@@ -438,7 +464,7 @@ func Start() {
 	ctx := context.TODO()
 
 	log.Info("Start IP Cleaner cron job")
-	go ipCleanerCronJob(&c, ctx, "nmap", log)
+	go ipCleanerCronJob(&c, ctx, log)
 
 	ch := make(chan hostData, 5)
 	log.Info("Start Subnet scan cron job")
