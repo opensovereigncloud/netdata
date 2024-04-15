@@ -232,6 +232,16 @@ func ipCleanerCronJob(c *netdataconf, ctx context.Context, log logr.Logger) {
 	}
 }
 
+func ipamHasIP(ipamObject v1alpha1.IP, ipAddress *v1alpha1.IPAddr) bool {
+	if ipamObject.Status.Reserved != nil {
+		return ipamObject.Status.Reserved.Equal(ipAddress)
+	}
+	if ipamObject.Spec.IP != nil {
+		return ipamObject.Spec.IP.Equal(ipAddress)
+	}
+	return false
+}
+
 func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IPInterface, createNewIP *bool, log logr.Logger) {
 	mac := strings.Split(ip.ObjectMeta.GenerateName, "-")[0]
 	labelsIPS := make(map[string]string)
@@ -243,9 +253,10 @@ func handleDuplicateMacs(ctx context.Context, ip v1alpha1.IP, client clienta1.IP
 	}
 	ipsList, _ := client.List(ctx, ipsListOptions)
 
-	for _, existedIP := range ipsList.Items {
-		if existedIP.Spec.IP.Equal(ip.Spec.IP) {
+	for _, existingIP := range ipsList.Items {
+		if ipamHasIP(existingIP, ip.Spec.IP) {
 			*createNewIP = false
+			break
 		}
 	}
 }
@@ -324,7 +335,6 @@ func createIP(hostdata hostData, conf *netdataconf, ctx context.Context, log log
 			log.Error(err, "Create IP error")
 		}
 		log.Info(fmt.Sprintf("Created IP : %s", createdIP.ObjectMeta.Name))
-
 	}
 }
 
