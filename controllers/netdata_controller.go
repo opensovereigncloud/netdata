@@ -13,9 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	yaml "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -326,6 +325,13 @@ func createIP(hostdata hostData, conf *netdataconf, ctx context.Context, log log
 	handleDuplicateIPs(ctx, *ip, client, &createNewIP, log)
 
 	if createNewIP {
+		// check if the ip might be part of some reserved block and skip
+		// this will happen if the IP is part of a smaller subnet which part of the currently scanned one
+		if !hostdata.subnet.CanReserve(ip.Spec.IP.AsCidr()) {
+			log.Info("Skipping IP, part of reserved block", "ip", hostdata.ip)
+			return
+		}
+
 		ip.SetOwnerReferences([]metav1.OwnerReference{
 			*metav1.NewControllerRef(hostdata.subnet, hostdata.subnet.GroupVersionKind()),
 		})
